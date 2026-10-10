@@ -5,6 +5,8 @@
 #pragma once
 #pragma comment (lib, "iphlpapi.lib")
 
+#include <atomic>
+
 #include "NetworkInfoDlg.h"
 #include "afxwin.h"
 #include "StaticEx.h"
@@ -69,6 +71,18 @@ protected:
     //CRITICAL_SECTION 可重入，因此 IniConnection 内部再调用 GetConnection/AutoSelect/
     //IniConnectionMenu 等同样加锁的函数是安全的。
     CCriticalSection m_conn_critical;
+
+    //IniConnection() 会重建菜单并调用SetTimer，这些操作必须在UI线程中执行，
+    //因此监控线程只通过WM_REINIT_CONNECTION请求重新初始化，由UI线程执行
+    enum ReinitReason
+    {
+        RR_INSUFFICIENT_BUFFER,     //GetIfTable缓冲区不够
+        RR_INTERFACE_NUM_CHANGED,   //网卡数量发生变化
+        RR_CONNECTION_NOT_MATCH,    //当前选择的连接与期望的连接不一致
+    };
+    std::atomic<bool> m_reinit_connection_pending{ false };    //已请求但UI线程尚未执行重新初始化时为true，避免重复请求
+    void RequestReinitConnection(ReinitReason reason);          //在监控线程中调用
+
     unsigned __int64 m_in_bytes{};        //当前已接收的字节数
     unsigned __int64 m_out_bytes{};   //当前已发送的字节数
     unsigned __int64 m_last_in_bytes{}; //上次已接收的字节数
@@ -271,6 +285,7 @@ protected:
     afx_msg LRESULT OnDpichanged(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnTaskbarWndClosed(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnMonitorInfoUpdated(WPARAM wParam, LPARAM lParam);
+    afx_msg LRESULT OnReinitConnection(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnDisplaychange(WPARAM wParam, LPARAM lParam);
     afx_msg LRESULT OnReopenTaksbarWnd(WPARAM wParam, LPARAM lParam);
 public:

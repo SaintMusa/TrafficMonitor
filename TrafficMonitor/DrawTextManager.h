@@ -112,6 +112,10 @@ private:
     template <class T>
     static inline void FunctionReplacer(void** p_found_function_pointer, void* p_args) noexcept
     {
+        if (p_found_function_pointer == nullptr)
+        {
+            return;
+        }
         //保存原始的函数指针
         decltype(T::BaseSettings::m_p_iat_old_function_pointer) p_iat_function = &*p_found_function_pointer;
         T::BaseSettings::m_p_iat_old_function_pointer = p_iat_function;
@@ -120,10 +124,6 @@ private:
             reinterpret_cast<typename T::Function>(*p_found_function_pointer);
         T::BaseSettings::m_old_function_pointer = iat_function;
         //替换IAT中的函数
-        if (p_found_function_pointer == nullptr)
-        {
-            return;
-        }
         EnableWriteMemoryGuard enable_write{p_found_function_pointer};
         if (!enable_write.GetState())
         {

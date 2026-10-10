@@ -122,6 +122,7 @@ BEGIN_MESSAGE_MAP(CTrafficMonitorDlg, CDialog)
     ON_MESSAGE(WM_DPICHANGED, &CTrafficMonitorDlg::OnDpichanged)
     ON_MESSAGE(WM_TASKBAR_WND_CLOSED, &CTrafficMonitorDlg::OnTaskbarWndClosed)
     ON_MESSAGE(WM_MONITOR_INFO_UPDATED, &CTrafficMonitorDlg::OnMonitorInfoUpdated)
+    ON_MESSAGE(WM_REINIT_CONNECTION, &CTrafficMonitorDlg::OnReinitConnection)
     ON_MESSAGE(WM_DISPLAYCHANGE, &CTrafficMonitorDlg::OnDisplaychange)
     ON_WM_EXITSIZEMOVE()
     ON_COMMAND(ID_PLUGIN_MANAGE, &CTrafficMonitorDlg::OnPluginManage)
@@ -448,9 +449,9 @@ void CTrafficMonitorDlg::IniConnection()
     CSingleLock sync(&m_conn_critical, TRUE);
 
     //为m_pIfTable开辟所需大小的内存并填充
-    ReloadIfTable();
-    if (m_pIfTable == nullptr)
-        return;     //无法获取接口表，此时不做任何处理，避免后续访问空指针
+    //失败时保留原有的连接列表，避免用旧的接口表重建m_connections（也避免后续访问空指针）
+    if (!ReloadIfTable() || m_pIfTable == nullptr)
+        return;
 
     //获取当前所有的连接，并保存到m_connections容器中
     if (!theApp.m_general_data.show_all_interface)
@@ -1417,12 +1418,7 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     }
 
     if (rtn == ERROR_INSUFFICIENT_BUFFER)
-    {
-        IniConnection();
-        CString info = CCommon::LoadText(IDS_INSUFFICIENT_BUFFER);
-        info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
-        CCommon::WriteLog(info, theApp.m_log_path.c_str());
-    }
+        RequestReinitConnection(RR_INSUFFICIENT_BUFFER);
 
     if (m_monitor_time_cnt % GetMonitorTimerCount(3) == GetMonitorTimerCount(3) - 1)
     {
@@ -1440,13 +1436,18 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt + 1));
                 CCommon::WriteLog(info, theApp.m_log_path.c_str());
             }
-            IniConnection();
+            RequestReinitConnection(RR_INTERFACE_NUM_CHANGED);
             last_interface_num = interface_num;
         }
 
-        string descr;
-        descr = (const char*)GetConnectIfTable(m_connection_selected).bDescr;
-        if (descr != theApp.m_cfg_data.m_connection_name)
+        //m_connection_selected 和 m_connection_name 会被UI线程修改，必须持锁读取
+        string descr, connection_name;
+        {
+            CSingleLock conn_sync(&m_conn_critical, TRUE);
+            descr = (const char*)GetConnectIfTable(m_connection_selected).bDescr;
+            connection_name = theApp.m_cfg_data.m_connection_name;
+        }
+        if (descr != connection_name)
         {
             //写入额外的调试信息
             if (theApp.m_debug_log)
@@ -1456,14 +1457,11 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
                 log_str += _T("IfTable description: ");
                 log_str += descr.c_str();
                 log_str += _T("\r\nm_connection_name: ");
-                log_str += theApp.m_cfg_data.m_connection_name.c_str();
+                log_str += connection_name.c_str();
                 CCommon::WriteLog(log_str, (theApp.m_config_dir + L".\\connections.log").c_str());
             }
 
-            IniConnection();
-            CString info = CCommon::LoadText(IDS_CONNECTION_NOT_MATCH);
-            info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
-            CCommon::WriteLog(info, theApp.m_log_path.c_str());
+            RequestReinitConnection(RR_CONNECTION_NOT_MATCH);
         }
     }
 
@@ -2974,6 +2972,32 @@ afx_msg LRESULT CTrafficMonitorDlg::OnTaskbarWndClosed(WPARAM wParam, LPARAM lPa
 }
 
 
+
+void CTrafficMonitorDlg::RequestReinitConnection(ReinitReason reason)
+{
+    //使用PostMessage而不是SendMessage，避免监控线程等待UI线程
+    if (!m_reinit_connection_pending.exchange(true))
+        PostMessage(WM_REINIT_CONNECTION, reason);
+}
+
+afx_msg LRESULT CTrafficMonitorDlg::OnReinitConnection(WPARAM wParam, LPARAM lParam)
+{
+    IniConnection();
+    m_reinit_connection_pending = false;
+
+    LPCTSTR log_id{};
+    if (wParam == RR_INSUFFICIENT_BUFFER)
+        log_id = IDS_INSUFFICIENT_BUFFER;
+    else if (wParam == RR_CONNECTION_NOT_MATCH)
+        log_id = IDS_CONNECTION_NOT_MATCH;
+    if (log_id != nullptr)
+    {
+        CString info = CCommon::LoadText(log_id);
+        info.Replace(_T("<%cnt%>"), CCommon::IntToString(m_restart_cnt));
+        CCommon::WriteLog(info, theApp.m_log_path.c_str());
+    }
+    return 0;
+}
 
 afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM lParam)
 {
