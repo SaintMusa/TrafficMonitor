@@ -370,27 +370,61 @@ void CTrafficMonitorDlg::GetScreenSize()
 }
 
 
+//通过GetIfEntry2获取指定接口的64位已接收/已发送字节数（MIB_IFROW中的dwInOctets/dwOutOctets是32位，每4GiB会回绕）。
+//if_index为MIB_IFROW::dwIndex。失败（如网卡刚消失）时返回false，不修改输出参数。
+//本函数不访问任何共享状态，调用时不需要持有 m_conn_critical。
+static bool GetIfOctets64(DWORD if_index, unsigned __int64& in_octets, unsigned __int64& out_octets)
+{
+    if (if_index == 0)
+        return false;
+    MIB_IF_ROW2 row{};
+    row.InterfaceIndex = if_index;
+    if (GetIfEntry2(&row) != NO_ERROR)
+        return false;
+    in_octets = row.InOctets;
+    out_octets = row.OutOctets;
+    return true;
+}
+
 void CTrafficMonitorDlg::AutoSelect()
 {
-    CSingleLock sync(&m_conn_critical, TRUE);   //读取 m_connections、写入 m_connection_selected
-    unsigned __int64 max_in_out_bytes{};
-    unsigned __int64 in_out_bytes;
-    //m_connection_selected = m_connections[0].index;
-    m_connection_selected = 0;
-    //自动选择连接时，查找已发送和已接收字节数之和最多的那个连接，并将其设置为当前查看的连接
-    for (size_t i{}; i < m_connections.size(); i++)
+    //先持锁拷贝所需的接口信息，释放锁后再调用GetIfEntry2
+    struct Candidate
     {
-        auto table = GetConnectIfTable(i);
-        if (table.dwOperStatus == IF_OPER_STATUS_OPERATIONAL)     //只选择网络状态为正常的连接
+        size_t conn_index;
+        DWORD if_index;
+    };
+    std::vector<Candidate> candidates;
+    {
+        CSingleLock sync(&m_conn_critical, TRUE);   //读取 m_connections
+        for (size_t i{}; i < m_connections.size(); i++)
         {
-            in_out_bytes = table.dwInOctets + table.dwOutOctets;
-            if (in_out_bytes > max_in_out_bytes)
-            {
-                max_in_out_bytes = in_out_bytes;
-                m_connection_selected = i;
-            }
+            auto table = GetConnectIfTable(static_cast<int>(i));
+            if (table.dwOperStatus == IF_OPER_STATUS_OPERATIONAL)     //只选择网络状态为正常的连接
+                candidates.push_back({ i, table.dwIndex });
         }
     }
+
+    //自动选择连接时，查找已发送和已接收字节数之和最多的那个连接（使用64位计数），并将其设置为当前查看的连接
+    size_t best_index{};
+    unsigned __int64 max_in_out_bytes{};
+    for (const auto& c : candidates)
+    {
+        unsigned __int64 in_bytes{}, out_bytes{};
+        if (!GetIfOctets64(c.if_index, in_bytes, out_bytes))    //获取失败的接口不参与比较
+            continue;
+        unsigned __int64 in_out_bytes = in_bytes + out_bytes;
+        if (in_out_bytes > max_in_out_bytes)
+        {
+            max_in_out_bytes = in_out_bytes;
+            best_index = c.conn_index;
+        }
+    }
+
+    CSingleLock sync(&m_conn_critical, TRUE);   //写入 m_connection_selected
+    if (best_index >= m_connections.size())     //期间连接列表可能已被重建
+        best_index = 0;
+    m_connection_selected = static_cast<int>(best_index);
     theApp.m_cfg_data.m_connection_name = GetConnection(m_connection_selected).description_2;
     m_connection_change_flag = true;
 }
@@ -1295,27 +1329,45 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     //vector 的同时 UI 线程在 IniConnection() 里 clear/push_back，vector 会重新分配并析构
     //元素，遍历方将读到已释放的 std::string 缓冲区。
     CSingleLock conn_sync(&m_conn_critical, TRUE);
+    //持锁时只收集需要查询的接口索引（MIB_IFROW::dwIndex），64位计数器在释放锁之后再获取
+    std::vector<DWORD> if_indices;
     if (!theApp.m_cfg_data.m_select_all)        //获取当前选中连接的网速
     {
-        auto table = GetConnectIfTable(m_connection_selected);
-        m_in_bytes = table.dwInOctets;
-        m_out_bytes = table.dwOutOctets;
+        if_indices.push_back(GetConnectIfTable(m_connection_selected).dwIndex);
     }
     else        //获取全部连接的网速
     {
-        m_in_bytes = 0;
-        m_out_bytes = 0;
         for (size_t i{}; i < m_connections.size(); i++)
         {
-            auto table = GetConnectIfTable(i);
             //if (i > 0 && m_pIfTable->table[m_connections[i].index].dwInOctets == m_pIfTable->table[m_connections[i - 1].index].dwInOctets
             //  && m_pIfTable->table[m_connections[i].index].dwOutOctets == m_pIfTable->table[m_connections[i - 1].index].dwOutOctets)
             //  continue;       //连接列表中可能会有相同的连接，统计所有连接的网速时，忽略掉已发送和已接收字节数完全相同的连接
-            m_in_bytes += table.dwInOctets;
-            m_out_bytes += table.dwOutOctets;
+            if_indices.push_back(GetConnectIfTable(static_cast<int>(i)).dwIndex);
         }
     }
     conn_sync.Unlock();     //后续采集不再访问共享的连接状态，尽早释放锁
+
+    //使用GetIfEntry2获取64位计数器，避免32位的dwInOctets/dwOutOctets每4GiB回绕而丢失该时间间隔的流量。
+    //dwIndex为0表示选中的连接无效（与以前读到全0的MIB_IFROW一致），直接忽略。
+    //只要有一个接口获取失败（如网卡刚消失），就把本次的字节数置0使本次网速无效：
+    //这样既不会把32位值与上次的64位值比较，也不会在该接口恢复后产生巨大的网速尖峰，
+    //m_last_*也会随之清零，下一次再重新建立基准。接口数量变化会由后面的逻辑触发连接重新初始化。
+    m_in_bytes = 0;
+    m_out_bytes = 0;
+    for (DWORD if_index : if_indices)
+    {
+        if (if_index == 0)
+            continue;
+        unsigned __int64 in_octets{}, out_octets{};
+        if (!GetIfOctets64(if_index, in_octets, out_octets))
+        {
+            m_in_bytes = 0;
+            m_out_bytes = 0;
+            break;
+        }
+        m_in_bytes += in_octets;
+        m_out_bytes += out_octets;
+    }
 
     unsigned __int64 cur_in_speed{}, cur_out_speed{};       //本次监控时间间隔内的上传和下载速度
 
@@ -1338,11 +1390,14 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     //  cur_out_speed = 0;
 
     //计算两次获取网速的时间间隔
+    //使用单调时钟GetTickCount64，不受系统时间调整（如NTP同步、手动改时间）的影响
     static ULONGLONG last_net_speed_time = 0;
-    ULONGLONG net_speed_time = CCommon::GetCurrentTimeSinceEpochMilliseconds();
+    ULONGLONG net_speed_time = GetTickCount64();
     int time_span = theApp.m_general_data.monitor_time_span;
-    if (last_net_speed_time != 0)
-        time_span = static_cast<int>(net_speed_time - last_net_speed_time);
+    if (last_net_speed_time != 0 && net_speed_time > last_net_speed_time)
+        time_span = static_cast<int>(std::min<ULONGLONG>(net_speed_time - last_net_speed_time, INT_MAX));
+    if (time_span <= 0)     //防止除零
+        time_span = theApp.m_general_data.monitor_time_span > 0 ? theApp.m_general_data.monitor_time_span : 1000;
     last_net_speed_time = net_speed_time;
 
     //将当前监控时间间隔的流量转换成每秒时间间隔内的流量
