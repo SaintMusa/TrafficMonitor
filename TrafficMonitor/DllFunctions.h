@@ -5,6 +5,8 @@
 #include <dxgi1_3.h> // 包含CreateDXGIFactory2
 #include <tchar.h>
 #include <utility>
+#include <memory>
+#include <mutex>
 
 template <class FunctionPointer>
 class CDllFunction
@@ -101,6 +103,47 @@ public:
     }
 };
 
+/**
+ * @brief 延迟加载版本的CDllFunction：构造时不加载DLL，第一次调用HasValue()或operator()时才加载（线程安全）。
+ 用于避免在程序启动时（静态初始化阶段）就加载很少用到的DLL（如d3dcompiler_47.dll、dcomp.dll、dxgi.dll）。
+ *
+ * @tparam FunctionPointer 函数指针类型
+ */
+template <class FunctionPointer>
+class CLazyDllFunction
+{
+private:
+    LPCTSTR m_dll_name;
+    LPCSTR m_function_name;
+    mutable std::once_flag m_once_flag;
+    mutable std::unique_ptr<CDllFunction<FunctionPointer>> m_p_function;
+
+    const CDllFunction<FunctionPointer>& Get() const
+    {
+        std::call_once(m_once_flag,
+                       [this]()
+                       {
+                           m_p_function = std::make_unique<CDllFunction<FunctionPointer>>(m_dll_name, m_function_name);
+                       });
+        return *m_p_function;
+    }
+
+public:
+    constexpr CLazyDllFunction(LPCTSTR dll_name, LPCSTR function_name) noexcept
+        : m_dll_name{dll_name}, m_function_name{function_name}
+    {
+    }
+    template <class... Args>
+    auto operator()(Args&&... args) const
+    {
+        return Get()(std::forward<Args>(args)...);
+    }
+    bool HasValue() const
+    {
+        return Get().HasValue();
+    }
+};
+
 typedef HRESULT(WINAPI* _GetDpiForMonitor)(HMONITOR hmonitor, MONITOR_DPI_TYPE dpiType, UINT* dpiX, UINT* dpiY);
 
 class CDllFunctions
@@ -111,9 +154,10 @@ public:
 
 public:
     HRESULT GetDpiForMonitor(HMONITOR hmonitor, MONITOR_DPI_TYPE dpiType, UINT* dpiX, UINT* dpiY);
-    static const CDllFunction<decltype(&::D3DCompile)> D3DCompile;
-    static const CDllFunction<decltype(&::DCompositionCreateDevice)> DCompositionCreateDevice;
-    static const CDllFunction<decltype(&::CreateDXGIFactory2)> CreateDXGIFactory2;
+    // 这些函数所在的DLL在第一次使用时才会被加载
+    static const CLazyDllFunction<decltype(&::D3DCompile)> D3DCompile;
+    static const CLazyDllFunction<decltype(&::DCompositionCreateDevice)> DCompositionCreateDevice;
+    static const CLazyDllFunction<decltype(&::CreateDXGIFactory2)> CreateDXGIFactory2;
 
 private:
     _GetDpiForMonitor m_getDpiForMonitor{};

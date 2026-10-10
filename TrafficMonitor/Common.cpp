@@ -548,13 +548,10 @@ BOOL CCommon::CreateFileShortcut(LPCTSTR lpszLnkFileDir, LPCTSTR lpszFileName, L
 
 wstring CCommon::GetStartUpPath()
 {
-    LPITEMIDLIST ppidl;
     TCHAR pszStartUpPath[MAX_PATH]{};
-    if (SHGetSpecialFolderLocation(NULL, CSIDL_STARTUP, &ppidl) == S_OK)
-    {
-        SHGetPathFromIDList(ppidl, pszStartUpPath);
-        CoTaskMemFree(ppidl);
-    }
+    // 使用SHGetFolderPath而不是SHGetSpecialFolderLocation：后者会初始化Shell命名空间，从而加载第三方Shell扩展（可能连带加载d2d1.dll等）
+    if (SHGetFolderPath(NULL, CSIDL_STARTUP, NULL, SHGFP_TYPE_CURRENT, pszStartUpPath) != S_OK)
+        pszStartUpPath[0] = L'\0';
     return wstring(pszStartUpPath);
 }
 
@@ -694,13 +691,10 @@ wstring CCommon::GetTemplateDir()
 
 wstring CCommon::GetAppDataConfigDir()
 {
-    LPITEMIDLIST ppidl;
-    TCHAR pszAppDataPath[MAX_PATH];
-    if (SHGetSpecialFolderLocation(NULL, CSIDL_APPDATA, &ppidl) == S_OK)
-    {
-        SHGetPathFromIDList(ppidl, pszAppDataPath);
-        CoTaskMemFree(ppidl);
-    }
+    TCHAR pszAppDataPath[MAX_PATH]{};
+    // 使用SHGetFolderPath而不是SHGetSpecialFolderLocation：后者会初始化Shell命名空间，从而加载第三方Shell扩展（可能连带加载d2d1.dll等）
+    if (SHGetFolderPath(NULL, CSIDL_APPDATA, NULL, SHGFP_TYPE_CURRENT, pszAppDataPath) != S_OK)
+        pszAppDataPath[0] = L'\0';
     wstring app_data_path{ pszAppDataPath };        //获取到C:/User/用户名/AppData/Roaming路径
     CreateDirectory(app_data_path.c_str(), NULL);       //如果Roaming不存在，则创建它
     app_data_path += L"\\TrafficMonitor\\";

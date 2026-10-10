@@ -5,14 +5,19 @@
 class CSupportedRenderEnums
 {
 private:
-    std::bitset<3> m_enums{1};
+    // 检测系统对D2D等的支持需要加载d2d1.dll等DLL，因此延迟到第一次真正需要时才检测
+    mutable std::bitset<3> m_enums{1};
+    mutable bool m_is_probed{false};
+    bool m_is_d2d1_disabled{false};
+
+    void Probe() const;
 
 public:
     constexpr static std::size_t DEFAULT_INDEX = 0;
     constexpr static std::size_t D2D1_WITH_DCOMPOSITION_INDEX = 1;
     constexpr static std::size_t D2D1_INDEX = 2;
 
-    CSupportedRenderEnums();
+    CSupportedRenderEnums() = default;
     ~CSupportedRenderEnums() = default;
     void EnableDefaultOnly() noexcept;
     void DisableD2D1() noexcept;

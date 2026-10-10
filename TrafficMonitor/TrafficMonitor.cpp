@@ -265,9 +265,9 @@ void CTrafficMonitorApp::LoadConfig()
     m_taskbar_data.netspeed_figure_max_value_unit = ini.GetInt(L"task_bar", L"netspeed_figure_max_value_unit", 1);
     m_taskbar_data.graph_color_following_system = ini.GetBool(L"task_bar", L"graph_color_following_system", true);
 
-    if (CTaskBarDlgDrawCommonSupport::CheckSupport())
-        m_taskbar_data.disable_d2d = ini.GetBool(L"task_bar", L"disable_d2d", true);
-    else
+    m_taskbar_data.disable_d2d = ini.GetBool(L"task_bar", L"disable_d2d", true);
+    // 仅在配置要使用D2D时才检测系统是否支持（检测需要加载D2D相关的DLL），GDI模式下不加载这些DLL
+    if (!m_taskbar_data.disable_d2d && !CTaskBarDlgDrawCommonSupport::CheckSupport())
         m_taskbar_data.disable_d2d = true;
     m_taskbar_data.enable_colorful_emoji = ini.GetBool(L"task_bar", L"enable_colorful_emoji", true);
 
