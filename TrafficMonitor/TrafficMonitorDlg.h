@@ -142,6 +142,11 @@ protected:
     CHistoryTrafficFile m_history_traffic{ theApp.m_history_traffic_path }; //储存历史流量
 
     CToolTipCtrl m_tool_tips;
+    ULONGLONG m_tool_tips_update_tick{};        //上一次更新主窗口鼠标提示内容的时间（GetTickCount64）
+
+    bool m_taskbar_draw_paused{ false };        //指示是否暂停绘制任务栏窗口：任务栏所在显示器上有程序全屏运行，或显示器已关闭。仅在UI线程访问
+    bool m_display_off{ false };                //指示显示器是否已关闭（GUID_CONSOLE_DISPLAY_STATE）
+    HPOWERNOTIFY m_display_state_notify{};      //显示器状态通知的句柄
 
     bool m_connection_change_flag{ false };     //如果执行过IniConnection()函数，该flag会置为true
     bool m_is_foreground_fullscreen{ false };   //指示前台窗口是否正在全局显示
@@ -153,13 +158,25 @@ protected:
 
     void DoMonitorAcquisition();    //获取一次监控信息
     static UINT MonitorThreadCallback(LPVOID dwUser);   //获取监控信息的线程函数
-    bool m_monitor_data_required{ false };          //线程中需要获取监控数据标志，当需要获取监控数据时置为true，获取到一次监控数据时置为false
-    bool m_is_thread_exit{ false }; //线程退出标志
+    CEvent m_monitor_data_event;                    //自动重置事件：需要获取监控数据时置位（由监控定时器触发），工作线程被唤醒获取一次监控数据后自动复位
+    CEvent m_monitor_exit_event{ FALSE, TRUE };     //手动重置事件：通知工作线程退出
+    std::atomic<bool> m_is_thread_exit{ false };    //线程退出标志
     CEvent m_threadExitEvent;       //用于通知主线程工作线程已退出
 public:
     void ExitMonitorThread();       //停止监控线程
 
 protected:
+    //监控线程是否需要获取某项监控数据。没有任何地方显示的数据不必获取（见IsMonitorItemNeeded）
+    //由UI线程在监控定时器中更新，监控线程读取
+    std::atomic<bool> m_cpu_freq_needed{ true };
+    std::atomic<bool> m_gpu_usage_needed{ true };
+    std::atomic<bool> m_hdd_usage_needed{ true };
+    bool IsMonitorItemNeeded(DisplayItem item) const;   //判断是否有地方（任务栏窗口、主窗口、鼠标提示、插件）需要用到某项监控数据
+    void UpdateMonitorItemNeeded();                     //更新上面三个标志
+
+    void UpdateTaskbarDrawPaused();     //检查任务栏所在显示器上是否有程序全屏运行，以及显示器是否关闭，更新m_taskbar_draw_paused
+    void UpdateToolTips(bool force = false);    //更新主窗口的鼠标提示。主窗口隐藏，或鼠标没有指向主窗口且提示没有显示时跳过更新（force为true时除外）
+
     CString GetMouseTipsInfo();     //获取鼠标提示信息
     void SetTransparency();         //根据m_transparency的值设置窗口透明度
     void SetTransparency(int transparency);

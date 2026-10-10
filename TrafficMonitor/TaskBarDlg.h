@@ -149,6 +149,9 @@ protected:
     bool m_menu_popuped{ false };               //指示当前是否有菜单处于弹出状态
     bool m_is_secondary_display{ false };       //是否显示在副显示器中
     bool m_is_width_changed{ false };
+    bool m_repaint_requested{ true };           //指示下一次定时器触发时是否需要重绘窗口
+    int m_ticks_since_repaint{};                //距离上一次重绘经过的定时器触发次数
+    ULONGLONG m_tool_tips_update_tick{};        //上一次更新鼠标提示内容的时间（GetTickCount64）
 
     UINT m_taskbar_dpi{};//TaskBarDlg自身专用dpi
 
@@ -193,7 +196,15 @@ public:
     void CalculateWindowSize();		//计算窗口每部分的大小，及各个部分的宽度。窗口大小保存到m_window_width和m_window_height中，各部分宽度保存到m_item_widths中，各部分的矩形区域保存到m_item_rects中
 
     void SetToolTipsTopMost();			//设置鼠标提示置顶
-    void UpdateToolTips();
+    void UpdateToolTips(bool force = false);    //更新鼠标提示。鼠标没有指向任务栏窗口且提示未显示时，提示内容不会被看到，此时跳过更新（force为true时除外）
+
+    //请求在主窗口的TASKBAR_TIMER下一次触发时重绘任务栏窗口
+    //窗口内容只会在监控数据更新、布局/设置改变等情况下发生变化，不再每次定时器触发都重绘
+    void RequestRepaint() { m_repaint_requested = true; }
+    //由主窗口的TASKBAR_TIMER调用，判断这一次是否需要重绘任务栏窗口
+    bool IsRepaintNeeded();
+    //是否需要在每次定时器触发时都重绘：滚动图的横向移动速度、插件项目的动画都依赖于重绘的频率
+    bool IsContinuousRepaintNeeded() const;
 
     bool GetCannotInsertToTaskBar() const { return m_connot_insert_to_task_bar; }
     int GetErrorCode() const { return m_error_code; }

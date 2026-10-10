@@ -479,7 +479,13 @@ bool CTaskBarDlg::AdjustWindowPos(bool force_adjust)
         force_adjust = true;
     }
 
+    CRect rect_before;
+    ::GetWindowRect(m_hWnd, rect_before);
     AdjustTaskbarWndPos(force_adjust);
+    CRect rect_after;
+    ::GetWindowRect(m_hWnd, rect_after);
+    if (force_adjust || rect_before != rect_after)      //窗口位置或大小发生变化后需要重绘
+        RequestRepaint();
 
     //如果窗口没有被成功嵌入到任务栏，窗口移动到了基于屏幕左上角的绝对位置，则修正窗口的位置
     if (m_connot_insert_to_task_bar)
@@ -502,6 +508,7 @@ bool CTaskBarDlg::AdjustWindowPos(bool force_adjust)
 
 void CTaskBarDlg::ApplyWindowTransparentColor()
 {
+    RequestRepaint();
 #ifndef COMPILE_FOR_WINXP
     if (theApp.IsWindows11Taskbar())      //Windows11下背景色不使用纯黑色，以解决深色模式下右键菜单无法弹出的问题
     {
@@ -555,6 +562,7 @@ void CTaskBarDlg::ApplyWindowTransparentColor()
 void CTaskBarDlg::WidthChanged()
 {
     m_is_width_changed = true;
+    RequestRepaint();
 }
 
 const CRect& CTaskBarDlg::GetRectForDpiCheck() const
@@ -570,6 +578,7 @@ UINT CTaskBarDlg::GetDPI() const
 void CTaskBarDlg::SetDPI(UINT dpi)
 {
     m_taskbar_dpi = dpi;
+    RequestRepaint();
 }
 
 UINT CTaskBarDlg::DPI(UINT pixel) const
@@ -736,6 +745,7 @@ void CTaskBarDlg::SetTextFont()
     }
     //创建新的字体
     theApp.m_taskbar_data.font.Create(m_font, GetDPI());
+    RequestRepaint();
 }
 
 void CTaskBarDlg::ApplySettings()
@@ -749,6 +759,10 @@ void CTaskBarDlg::CalculateWindowSize()
     bool horizontal_arrange = theApp.m_taskbar_data.horizontal_arrange && m_taskbar_on_top_or_bottom;
     if (theApp.m_taskbar_data.display_item.IsEmpty() && theApp.m_taskbar_data.plugin_display_item.data().empty())
         theApp.m_taskbar_data.display_item.Add(TDI_UP);        //至少显示一项
+
+    //保存计算前的布局，用于判断布局是否发生了变化
+    const auto last_item_widths{ m_item_widths };
+    const auto last_item_rects{ m_item_rects };
 
     m_item_widths.clear();
     //显示项目的宽度
@@ -951,6 +965,17 @@ void CTaskBarDlg::CalculateWindowSize()
     m_rect.right = m_rect.left + m_window_width;
     m_rect.bottom = m_rect.top + m_window_height;
 
+    //布局发生变化时，需要重绘窗口
+    bool layout_changed = (last_item_widths.size() != m_item_widths.size() || last_item_rects != m_item_rects);
+    for (size_t i{}; !layout_changed && i < m_item_widths.size(); i++)
+    {
+        const auto& last_item{ last_item_widths[i] };
+        const auto& item{ m_item_widths[i] };
+        layout_changed = !(last_item == item) || last_item.item_width.label_width != item.item_width.label_width
+            || last_item.item_width.value_width != item.item_width.value_width || last_item.is_double_line != item.is_double_line;
+    }
+    if (layout_changed)
+        RequestRepaint();
 }
 
 void CTaskBarDlg::SetToolTipsTopMost()
@@ -958,14 +983,57 @@ void CTaskBarDlg::SetToolTipsTopMost()
     m_tool_tips.SetWindowPos(&wndTopMost, 0, 0, 0, 0, SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW);
 }
 
-void CTaskBarDlg::UpdateToolTips()
+void CTaskBarDlg::UpdateToolTips(bool force)
 {
     if (theApp.m_taskbar_data.show_tool_tip && IsWindow(m_tool_tips.GetSafeHwnd()))
     {
+        //鼠标没有指向任务栏窗口，且鼠标提示没有显示时，提示内容不会被看到，不必每秒重新生成。
+        //鼠标移动到窗口上时，OnMouseMove会先更新一次提示内容
+        if (!force)
+        {
+            CPoint cursor_pos;
+            CRect window_rect;
+            ::GetCursorPos(&cursor_pos);
+            ::GetWindowRect(GetSafeHwnd(), window_rect);
+            if (!window_rect.PtInRect(cursor_pos) && !m_tool_tips.IsWindowVisible())
+                return;
+        }
         CString tip_info;
         tip_info = GetMouseTipsInfo();
         m_tool_tips.UpdateTipText(tip_info, this);
+        m_tool_tips_update_tick = GetTickCount64();
     }
+}
+
+bool CTaskBarDlg::IsContinuousRepaintNeeded() const
+{
+    //横向滚动图在每次绘制时都会向历史数据中添加数据，绘制的频率决定了图形滚动的速度
+    if (theApp.m_taskbar_data.cm_graph_type && (theApp.m_taskbar_data.show_status_bar || theApp.m_taskbar_data.show_netspeed_figure))
+        return true;
+    //插件项目可能自绘或有动画效果，保持原有的重绘频率
+    for (const auto& item : m_item_widths)
+    {
+        if (item.IsPlugin())
+            return true;
+    }
+    return false;
+}
+
+bool CTaskBarDlg::IsRepaintNeeded()
+{
+    //每隔一段时间（20*100ms）即使没有收到重绘请求也重绘一次，作为没有被请求覆盖到的情况的保险
+    const int MAX_TICKS_WITHOUT_REPAINT = 20;
+    bool repaint = m_repaint_requested || IsContinuousRepaintNeeded() || m_ticks_since_repaint >= MAX_TICKS_WITHOUT_REPAINT;
+    if (repaint)
+    {
+        m_repaint_requested = false;
+        m_ticks_since_repaint = 0;
+    }
+    else
+    {
+        m_ticks_since_repaint++;
+    }
+    return repaint;
 }
 
 bool CTaskBarDlg::IsItemShow(DisplayItem item)
@@ -1203,6 +1271,9 @@ BOOL CTaskBarDlg::PreTranslateMessage(MSG* pMsg)
 void CTaskBarDlg::OnMouseMove(UINT nFlags, CPoint point)
 {
     // TODO: 在此添加消息处理程序代码和/或调用默认值
+    //鼠标没有指向本窗口期间不会更新鼠标提示的内容，所以鼠标移动到窗口上时先更新一次，使提示显示前内容是最新的
+    if (GetTickCount64() - m_tool_tips_update_tick > 1000)
+        UpdateToolTips(true);
 
     CDialogEx::OnMouseMove(nFlags, point);
 }
@@ -1298,6 +1369,9 @@ BOOL CTaskBarDlg::OnCommand(WPARAM wParam, LPARAM lParam)
         }
     }
 
+    //菜单命令可能改变了显示的内容。命令的处理过程中本对象可能被销毁，所以在调用基类之前请求重绘
+    //（主窗口的OnCommand在处理完命令后还会再请求一次）
+    RequestRepaint();
     return CDialogEx::OnCommand(wParam, lParam);
 }
 

@@ -27,6 +27,9 @@
 
 // CTrafficMonitorDlg 对话框
 
+//显示器开关状态的电源设置GUID（GUID_CONSOLE_DISPLAY_STATE）
+static const GUID GUID_CONSOLE_DISPLAY_STATE_ID = { 0x6fe69556, 0x704a, 0x47a0, { 0x8f, 0x24, 0xc2, 0x8d, 0x93, 0x6f, 0xda, 0x47 } };
+
 //静态成员初始化
 unsigned int CTrafficMonitorDlg::m_WM_TASKBARCREATED{ ::RegisterWindowMessage(_T("TaskbarCreated")) };  //注册任务栏建立的消息
 
@@ -1264,6 +1267,9 @@ BOOL CTrafficMonitorDlg::OnInitDialog()
 
     SetTimer(TASKBAR_TIMER, 100, NULL);
 
+    //注册显示器开关状态的通知，显示器关闭期间暂停绘制任务栏窗口
+    m_display_state_notify = ::RegisterPowerSettingNotification(m_hWnd, &GUID_CONSOLE_DISPLAY_STATE_ID, DEVICE_NOTIFY_WINDOW_HANDLE);
+
     return TRUE;  // 除非将焦点设置到控件，否则返回 TRUE
 }
 
@@ -1535,21 +1541,30 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     //获取CPU频率
     //if (lite_version || is_arm64ec || !theApp.m_general_data.IsHardwareEnable(HI_CPU))
     //{
-    if (m_cpu_freq_helper.GetCpuFreq(theApp.m_cpu_freq))
+    //没有任何地方需要CPU频率时跳过获取（见IsMonitorItemNeeded），此时置为“不可用”的初始值-1
+    if (!m_cpu_freq_needed)
+        theApp.m_cpu_freq = -1;
+    else if (m_cpu_freq_helper.GetCpuFreq(theApp.m_cpu_freq))
         cpu_freq_acquired = true;
     //}
 
     //获取GPU利用率
     if (lite_version /*|| is_arm64ec*/ || !theApp.m_general_data.IsHardwareEnable(HI_GPU))
     {
-        if (m_gpu_usage_helper.GetGpuUsage(theApp.m_gpu_usage))
+        //没有任何地方需要GPU利用率时跳过获取（\GPU Engine(*)\Utilization Percentage 会遍历所有进程的引擎，开销较大）
+        if (m_gpu_usage_needed && m_gpu_usage_helper.GetGpuUsage(theApp.m_gpu_usage))
             gpu_usage_acquired = true;
         else
             theApp.m_gpu_usage = -1;
     }
 
     //获取硬盘利用率
-    if (lite_version /*|| is_arm64ec*/ || !theApp.m_general_data.IsHardwareEnable(HI_HDD))
+    if ((lite_version /*|| is_arm64ec*/ || !theApp.m_general_data.IsHardwareEnable(HI_HDD)) && !m_hdd_usage_needed)
+    {
+        //没有任何地方需要硬盘利用率时跳过获取
+        theApp.m_hdd_usage = -1;
+    }
+    else if (lite_version /*|| is_arm64ec*/ || !theApp.m_general_data.IsHardwareEnable(HI_HDD))
     {
         int disk_index = m_disk_usage_helper.FindDiskIndex(theApp.m_general_data.hard_disk_name);
         //没有找到要监控的硬盘时默认使用总体利用率
@@ -1700,35 +1715,29 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     m_monitor_time_cnt++;
 
     //发送监控信息更新消息
-    SendMessage(WM_MONITOR_INFO_UPDATED);
+    //（主线程正在等待本线程退出时不再发送，避免SendMessage阻塞到等待超时）
+    if (!m_is_thread_exit)
+        SendMessage(WM_MONITOR_INFO_UPDATED);
 }
 
 UINT CTrafficMonitorDlg::MonitorThreadCallback(LPVOID dwUser)
 {
     CTrafficMonitorDlg* pThis = (CTrafficMonitorDlg*)dwUser;
-    while (true)
+    //退出事件放在第一位，两个事件同时有信号时优先退出
+    HANDLE wait_handles[2]{ pThis->m_monitor_exit_event.m_hObject, pThis->m_monitor_data_event.m_hObject };
+    while (!pThis->m_is_thread_exit)
     {
-        //获取一次监控数据
-        if (pThis->m_monitor_data_required)
-        {
-            pThis->DoMonitorAcquisition();
-            //获取到监控数据后重置flag
-            pThis->m_monitor_data_required = false;
-        }
-        else
-        {
-            Sleep(10);
-        }
+        //等待获取监控数据的通知或退出通知，等待期间线程不占用CPU
+        DWORD wait_result = ::WaitForMultipleObjects(2, wait_handles, FALSE, INFINITE);
+        if (wait_result != WAIT_OBJECT_0 + 1)       //不是“需要获取监控数据”的通知（退出事件或等待失败）
+            break;
 
-        // 检查退出标志
-        if (pThis->m_is_thread_exit)
-        {
-            // 触发事件，通知主线程工作线程已退出
-            pThis->m_threadExitEvent.SetEvent();
-            return 0;
-        }
+        //获取一次监控数据（自动重置事件在线程被唤醒时已经复位）
+        pThis->DoMonitorAcquisition();
     }
 
+    // 触发事件，通知主线程工作线程已退出
+    pThis->m_threadExitEvent.SetEvent();
     return 0;
 }
 
@@ -1737,6 +1746,7 @@ void CTrafficMonitorDlg::ExitMonitorThread()
 {
     // 通知线程退出
     m_is_thread_exit = true;
+    m_monitor_exit_event.SetEvent();
 
     // 等待线程退出
     ::WaitForSingleObject(m_threadExitEvent.m_hObject, 1000);
@@ -1748,8 +1758,10 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
     // TODO: 在此添加消息处理程序代码和/或调用默认值
     if (nIDEvent == MONITOR_TIMER)
     {
+        //更新哪些监控数据需要获取（在UI线程中判断，避免监控线程访问显示设置）
+        UpdateMonitorItemNeeded();
         //通知线程获取监控数据
-        m_monitor_data_required = true;
+        m_monitor_data_event.SetEvent();
     }
 
     if (nIDEvent == MAIN_TIMER)
@@ -1972,6 +1984,8 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
         if (theApp.m_last_light_mode != light_mode)
         {
             theApp.m_last_light_mode = light_mode;
+            if (IsTaskbarWndValid())
+                m_tBarDlg->RequestRepaint();        //颜色可能会随深色/浅色模式改变
             bool restart_taskbar_dlg{ false };
             if (theApp.m_taskbar_data.auto_adapt_light_theme)
             {
@@ -2070,6 +2084,7 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
                 bool is_taskbar_transparent{ theApp.m_taskbar_data.IsTaskbarTransparent()};
                 theApp.m_taskbar_data.back_color = color;
                 theApp.m_taskbar_data.SetTaskabrTransparent(is_taskbar_transparent);
+                m_tBarDlg->RequestRepaint();
                 if (is_taskbar_transparent)
                     m_tBarDlg->ApplyWindowTransparentColor();
             }
@@ -2143,7 +2158,12 @@ void CTrafficMonitorDlg::OnTimer(UINT_PTR nIDEvent)
             }
 
             m_tBarDlg->AdjustWindowPos();
-            m_tBarDlg->Invalidate(FALSE);
+
+            //任务栏所在显示器上有程序全屏运行或显示器关闭时暂停绘制，恢复时会立即重绘一次
+            UpdateTaskbarDrawPaused();
+            //窗口内容只在数据更新、布局/设置改变等情况下才会变化，不需要每100ms都重绘（见CTaskBarDlg::IsRepaintNeeded）
+            if (!m_taskbar_draw_paused && m_tBarDlg->IsRepaintNeeded())
+                m_tBarDlg->Invalidate(FALSE);
         }
     }
 
@@ -2401,7 +2421,11 @@ BOOL CTrafficMonitorDlg::OnCommand(WPARAM wParam, LPARAM lParam)
     }
 
 
-    return CDialog::OnCommand(wParam, lParam);
+    BOOL rtn = CDialog::OnCommand(wParam, lParam);
+    //菜单命令可能改变了任务栏窗口显示的内容（命令处理过程中任务栏窗口可能被重新创建，所以在处理完之后再请求重绘）
+    if (IsTaskbarWndValid())
+        m_tBarDlg->RequestRepaint();
+    return rtn;
     }
 
 
@@ -2467,6 +2491,9 @@ BOOL CTrafficMonitorDlg::PreTranslateMessage(MSG* pMsg)
 
     if (theApp.m_main_wnd_data.show_tool_tip && m_tool_tips.GetSafeHwnd())
     {
+        //鼠标没有指向主窗口期间不会更新鼠标提示的内容，所以鼠标移动到主窗口上时先更新一次，使提示显示前内容是最新的
+        if (pMsg->message == WM_MOUSEMOVE && pMsg->hwnd == m_hWnd && GetTickCount64() - m_tool_tips_update_tick > 1000)
+            UpdateToolTips(true);
         m_tool_tips.RelayEvent(pMsg);
     }
 
@@ -2613,6 +2640,12 @@ void CTrafficMonitorDlg::OnDestroy()
 
     //程序退出时删除通知栏图标
     ::Shell_NotifyIcon(NIM_DELETE, &m_ntIcon);
+
+    if (m_display_state_notify != nullptr)
+    {
+        ::UnregisterPowerSettingNotification(m_display_state_notify);
+        m_display_state_notify = nullptr;
+    }
 
     // 停止监控线程
     ExitMonitorThread();
@@ -3059,16 +3092,98 @@ afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM l
     Invalidate(FALSE);      //刷新窗口信息
 
     //更新鼠标提示
+    UpdateToolTips();
+    //通知任务栏窗口数据已更新，由TASKBAR_TIMER重绘
+    //更新任务栏窗口鼠标提示（暂停绘制期间跳过，恢复后会重新更新）
+    if (IsTaskbarWndValid())
+    {
+        m_tBarDlg->RequestRepaint();
+        if (!m_taskbar_draw_paused)
+            m_tBarDlg->UpdateToolTips();
+    }
+    return 0;
+}
+
+void CTrafficMonitorDlg::UpdateToolTips(bool force)
+{
     if (theApp.m_main_wnd_data.show_tool_tip && m_tool_tips.GetSafeHwnd() != NULL)
     {
+        //主窗口隐藏，或鼠标没有指向主窗口且鼠标提示没有显示时，提示内容不会被看到，不必每秒重新生成。
+        //鼠标移动到主窗口上时，PreTranslateMessage会先更新一次提示内容
+        if (!force)
+        {
+            if (!IsWindowVisible())
+                return;
+            CPoint cursor_pos;
+            CRect window_rect;
+            ::GetCursorPos(&cursor_pos);
+            GetWindowRect(window_rect);
+            if (!window_rect.PtInRect(cursor_pos) && !m_tool_tips.IsWindowVisible())
+                return;
+        }
         CString tip_info;
         tip_info = GetMouseTipsInfo();
         m_tool_tips.UpdateTipText(tip_info, this);
+        m_tool_tips_update_tick = GetTickCount64();
     }
-    //更新任务栏窗口鼠标提示
-    if (IsTaskbarWndValid())
-        m_tBarDlg->UpdateToolTips();
-    return 0;
+}
+
+void CTrafficMonitorDlg::UpdateTaskbarDrawPaused()
+{
+    bool paused = m_display_off;
+    //任务栏窗口所在的显示器上有程序全屏运行时，任务栏被遮挡，不需要绘制
+    if (!paused && IsTaskbarWndValid())
+    {
+        HMONITOR h_taskbar_monitor = ::MonitorFromWindow(m_tBarDlg->GetSafeHwnd(), MONITOR_DEFAULTTONEAREST);
+        //任务栏设置为自动隐藏时，最大化的窗口也会覆盖整个显示器，但此时任务栏仍可以弹出显示，因此不把最大化的窗口视为全屏
+        paused = CCommon::IsForegroundFullscreen(h_taskbar_monitor) && !::IsZoomed(::GetForegroundWindow());
+    }
+    if (paused != m_taskbar_draw_paused)
+    {
+        m_taskbar_draw_paused = paused;
+        //恢复时立即重绘一次，并更新一次鼠标提示
+        if (!paused && IsTaskbarWndValid())
+        {
+            m_tBarDlg->RequestRepaint();
+            m_tBarDlg->UpdateToolTips();
+        }
+    }
+}
+
+bool CTrafficMonitorDlg::IsMonitorItemNeeded(DisplayItem item) const
+{
+    //插件可以通过OnMonitorInfo和ITrafficMonitor::GetMonitorValue读取任意监控数据，有插件加载时保守处理，全部获取
+    for (const auto& plugin_info : theApp.m_plugins.GetPlugins())
+    {
+        if (plugin_info.plugin != nullptr)
+            return true;
+    }
+
+    //任务栏窗口：显示了该项目，或鼠标提示中会列出未显示的项目
+    if (theApp.m_cfg_data.m_show_task_bar_wnd)
+    {
+        if (theApp.m_taskbar_data.display_item.Contains(item) || theApp.m_taskbar_data.show_tool_tip)
+            return true;
+    }
+
+    //主窗口：当前皮肤的布局中显示了该项目（“显示更多信息”的两种布局都检查），或鼠标提示中会列出未显示的项目
+    //主窗口隐藏时，用户重新显示主窗口后，下一次监控定时器触发（最多一个监控时间间隔）就会获取到数据
+    if (!theApp.m_cfg_data.m_hide_main_window)
+    {
+        if (m_skin.GetLayoutInfo().layout_s.GetItem(item).show || m_skin.GetLayoutInfo().layout_l.GetItem(item).show
+            || theApp.m_main_wnd_data.show_tool_tip)
+            return true;
+    }
+
+    //CPU频率、GPU利用率和硬盘利用率没有设置超出提示（内存使用率、温度、流量的提示不依赖这三项数据），通知区图标的提示也不包含它们
+    return false;
+}
+
+void CTrafficMonitorDlg::UpdateMonitorItemNeeded()
+{
+    m_cpu_freq_needed = IsMonitorItemNeeded(TDI_CPU_FREQ);
+    m_gpu_usage_needed = IsMonitorItemNeeded(TDI_GPU_USAGE);
+    m_hdd_usage_needed = IsMonitorItemNeeded(TDI_HDD_USAGE);
 }
 
 
@@ -3247,6 +3362,18 @@ void CTrafficMonitorDlg::OnPluginDetailTaksbar()
 
 UINT CTrafficMonitorDlg::OnPowerBroadcast(UINT nPowerEvent, LPARAM nEventData)
 {
+    // 显示器开关状态发生变化
+    if (nPowerEvent == PBT_POWERSETTINGCHANGE && nEventData != 0)
+    {
+        const POWERBROADCAST_SETTING* setting = reinterpret_cast<const POWERBROADCAST_SETTING*>(nEventData);
+        if (IsEqualGUID(setting->PowerSetting, GUID_CONSOLE_DISPLAY_STATE_ID) && setting->DataLength == sizeof(DWORD))
+        {
+            DWORD display_state = *reinterpret_cast<const DWORD*>(setting->Data);   //0：关闭；1：开启；2：变暗
+            m_display_off = (display_state == 0);
+            UpdateTaskbarDrawPaused();
+        }
+    }
+
     // 系统从休眠恢复
     if (nPowerEvent == PBT_APMRESUMESUSPEND)
     {
@@ -3301,6 +3428,8 @@ void CTrafficMonitorDlg::OnColorizationColorChanged(DWORD dwColorizationColor, B
         BYTE blue = dwColorizationColor & 0xFF;
         COLORREF theme_color = RGB(red, green, blue);
         theApp.SetThemeColor(theme_color);
+        if (IsTaskbarWndValid())
+            m_tBarDlg->RequestRepaint();        //使用系统主题色的图形颜色可能改变
     }
     CDialog::OnColorizationColorChanged(dwColorizationColor, bOpacity);
 }
