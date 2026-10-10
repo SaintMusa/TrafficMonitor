@@ -197,6 +197,11 @@ CString CTrafficMonitorDlg::GetMouseTipsInfo()
         temp.Format(_T("\r\n%s: %d %%"), CCommon::LoadText(IDS_GPU_USAGE), theApp.m_gpu_usage);
         tip_info += temp;
     }
+    if (!skin_layout.GetItem(TDI_GPU_MEMORY).show && theApp.m_gpu_memory >= 0)
+    {
+        temp.Format(_T("\r\n%s: %s"), CCommon::LoadText(IDS_GPU_MEMORY), CCommon::KBytesToString(theApp.m_gpu_memory / 1024));
+        tip_info += temp;
+    }
 #ifndef WITHOUT_TEMPERATURE
     if (IsTemperatureNeeded())
     {
@@ -1557,6 +1562,10 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
         else
             theApp.m_gpu_usage = -1;
     }
+
+    //获取显存占用（没有任何地方需要时跳过获取，此时置为“不可用”的初始值-1）
+    if (!m_gpu_memory_needed || !m_gpu_memory_helper.GetGpuMemoryUsed(theApp.m_gpu_memory))
+        theApp.m_gpu_memory = -1;
 
     //获取硬盘利用率
     if ((lite_version /*|| is_arm64ec*/ || !theApp.m_general_data.IsHardwareEnable(HI_HDD)) && !m_hdd_usage_needed)
@@ -3175,7 +3184,7 @@ bool CTrafficMonitorDlg::IsMonitorItemNeeded(DisplayItem item) const
             return true;
     }
 
-    //CPU频率、GPU利用率和硬盘利用率没有设置超出提示（内存使用率、温度、流量的提示不依赖这三项数据），通知区图标的提示也不包含它们
+    //CPU频率、GPU利用率、显存占用和硬盘利用率没有设置超出提示（内存使用率、温度、流量的提示不依赖这几项数据），通知区图标的提示也不包含它们
     return false;
 }
 
@@ -3183,6 +3192,7 @@ void CTrafficMonitorDlg::UpdateMonitorItemNeeded()
 {
     m_cpu_freq_needed = IsMonitorItemNeeded(TDI_CPU_FREQ);
     m_gpu_usage_needed = IsMonitorItemNeeded(TDI_GPU_USAGE);
+    m_gpu_memory_needed = IsMonitorItemNeeded(TDI_GPU_MEMORY);
     m_hdd_usage_needed = IsMonitorItemNeeded(TDI_HDD_USAGE);
 }
 

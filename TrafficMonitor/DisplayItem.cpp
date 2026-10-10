@@ -79,6 +79,7 @@ CString CommonDisplayItem::GetItemName() const
         case TDI_HDD_USAGE: return CCommon::LoadText(IDS_HDD_USAGE);
         case TDI_CPU_FREQ: return CCommon::LoadText(IDS_CPU_FREQ);
         case TDI_TODAY_TRAFFIC: return CCommon::LoadText(IDS_TRAFFIC_USED);
+        case TDI_GPU_MEMORY: return CCommon::LoadText(IDS_GPU_MEMORY);
         default:
             ASSERT(false);
             break;
@@ -135,6 +136,9 @@ std::wstring CommonDisplayItem::DefaultString(bool is_main_window) const
         case TDI_GPU_TEMP:
             default_text = CCommon::LoadText(IDS_GPU_DISP, _T(": "));
             break;
+        case TDI_GPU_MEMORY:
+            default_text = CCommon::LoadText(IDS_GPU_MEMORY_DISP, _T(": "));
+            break;
         case TDI_HDD_TEMP:
             default_text = CCommon::LoadText(IDS_HDD_DISP, _T(": "));
             break;
@@ -176,6 +180,7 @@ const wchar_t* CommonDisplayItem::GetItemIniKeyName() const
         case TDI_TOTAL_SPEED: return L"total_speed_string";
         case TDI_CPU_FREQ: return L"cpu_freq_string";
         case TDI_TODAY_TRAFFIC: return L"today_traffic_string";
+        case TDI_GPU_MEMORY: return L"gpu_memory_string";
         }
         ASSERT(FALSE);
         return L"";
@@ -239,6 +244,13 @@ CString CommonDisplayItem::GetItemValueText(bool is_main_window) const
         //显卡利用率
         case TDI_GPU_USAGE:
             str_value = CCommon::UsageToString(theApp.m_gpu_usage, *cfg_data);
+            break;
+        //显卡显存占用
+        case TDI_GPU_MEMORY:
+            if (theApp.m_gpu_memory < 0)
+                str_value = _T("--");
+            else
+                str_value = CCommon::DataSizeToString(static_cast<unsigned long long>(theApp.m_gpu_memory), cfg_data->separate_value_unit_with_space);
             break;
         //硬盘利用率
         case TDI_HDD_USAGE:
@@ -310,6 +322,9 @@ CString CommonDisplayItem::GetItemValueSampleText(bool is_main_window) const
             break;
         case TDI_CPU_FREQ:
             sample_str = _T("1.0 GHz");
+            break;
+        case TDI_GPU_MEMORY:
+            sample_str = _T("1.20 GB");
             break;
         default:
             sample_str = _T("99");
@@ -403,6 +418,15 @@ CString CommonDisplayItem::GetItemValueSampleText(bool is_main_window) const
                 sample_str = _T("999.99 MB");
             else
                 sample_str = _T("999.99MB");
+        }
+            break;
+        //显存占用
+        case TDI_GPU_MEMORY:
+        {
+            if (theApp.m_taskbar_data.separate_value_unit_with_space)
+                sample_str = _T("1023.99 MB");
+            else
+                sample_str = _T("1023.99MB");
         }
             break;
         }

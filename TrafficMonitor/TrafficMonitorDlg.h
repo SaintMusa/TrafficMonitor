@@ -25,6 +25,7 @@
 #include "PdhHardwareQuery/CPUUsage.h"
 #include "PdhHardwareQuery/CpuFreq.h"
 #include "PdhHardwareQuery/GpuUsage.h"
+#include "PdhHardwareQuery/GpuMemory.h"
 #include "PdhHardwareQuery/DiskUsage.h"
 #include "HistoryTrafficFile.h"
 
@@ -91,6 +92,7 @@ protected:
     CCPUUsage m_cpu_usage_helper;
     CPdhCpuFreq m_cpu_freq_helper;
     CPdhGPUUsage m_gpu_usage_helper;
+    CPdhGPUMemory m_gpu_memory_helper;
     CPdhDiskUsage m_disk_usage_helper;
 
     bool m_get_disk_usage_by_pdh{};
@@ -170,9 +172,10 @@ protected:
     //由UI线程在监控定时器中更新，监控线程读取
     std::atomic<bool> m_cpu_freq_needed{ true };
     std::atomic<bool> m_gpu_usage_needed{ true };
+    std::atomic<bool> m_gpu_memory_needed{ true };
     std::atomic<bool> m_hdd_usage_needed{ true };
     bool IsMonitorItemNeeded(DisplayItem item) const;   //判断是否有地方（任务栏窗口、主窗口、鼠标提示、插件）需要用到某项监控数据
-    void UpdateMonitorItemNeeded();                     //更新上面三个标志
+    void UpdateMonitorItemNeeded();                     //更新上面几个标志
 
     void UpdateTaskbarDrawPaused();     //检查任务栏所在显示器上是否有程序全屏运行，以及显示器是否关闭，更新m_taskbar_draw_paused
     void UpdateToolTips(bool force = false);    //更新主窗口的鼠标提示。主窗口隐藏，或鼠标没有指向主窗口且提示没有显示时跳过更新（force为true时除外）
