@@ -1050,6 +1050,42 @@ void CTaskBarDlg::ApplySettings()
     CalculateWindowSize();
 }
 
+//Family of an item for column pairing: 0 means "pairs with anything" (plugins and other items keep the old behaviour)
+static int GetItemFamily(const CommonDisplayItem& item)
+{
+    if (item.IsPlugin())
+        return 0;
+    switch (item.ItemType())
+    {
+    case TDI_UP:
+    case TDI_DOWN:
+    case TDI_TOTAL_SPEED:
+    case TDI_TODAY_TRAFFIC:
+        return 1;
+    case TDI_CPU:
+    case TDI_MEMORY:
+    case TDI_CPU_TEMP:
+    case TDI_CPU_FREQ:
+        return 2;
+    case TDI_GPU_USAGE:
+    case TDI_GPU_MEMORY:
+    case TDI_GPU_TEMP:
+        return 3;
+    case TDI_HDD_USAGE:
+    case TDI_HDD_TEMP:
+        return 4;
+    default:
+        return 0;
+    }
+}
+
+bool CTaskBarDlg::CanShareColumn(const CommonDisplayItem& top, const CommonDisplayItem& bottom)
+{
+    int top_family = GetItemFamily(top);
+    int bottom_family = GetItemFamily(bottom);
+    return top_family == 0 || bottom_family == 0 || top_family == bottom_family;
+}
+
 void CTaskBarDlg::CalculateWindowSize()
 {
     bool horizontal_arrange = theApp.m_taskbar_data.horizontal_arrange && m_taskbar_on_top_or_bottom;
@@ -1119,6 +1155,33 @@ void CTaskBarDlg::CalculateWindowSize()
             width_info.item_width = item_widths[item];
             m_item_widths.push_back(width_info);
         }
+    }
+
+    //Pull each family's items up to just after the family's first item (otherwise keeping the user's order),
+    //so e.g. VRAM ends up next to GPU and the two can share a column
+    if (theApp.m_taskbar_data.group_related_items)
+    {
+        std::vector<ItemWidthInfo> grouped;
+        std::vector<bool> placed(m_item_widths.size(), false);
+        for (size_t i = 0; i < m_item_widths.size(); i++)
+        {
+            if (placed[i])
+                continue;
+            grouped.push_back(m_item_widths[i]);
+            placed[i] = true;
+            int family = GetItemFamily(m_item_widths[i]);
+            if (family == 0)
+                continue;
+            for (size_t j = i + 1; j < m_item_widths.size(); j++)
+            {
+                if (!placed[j] && GetItemFamily(m_item_widths[j]) == family)
+                {
+                    grouped.push_back(m_item_widths[j]);
+                    placed[j] = true;
+                }
+            }
+        }
+        m_item_widths.swap(grouped);
     }
 
     int item_count = static_cast<int>(m_item_widths.size());
@@ -1191,6 +1254,16 @@ void CTaskBarDlg::CalculateWindowSize()
                 else
                 {
                     iter->is_double_line = false;
+                    //Two items that don't belong together (e.g. download above CPU) don't share a column: the first
+                    //one gets a stacked column of its own, so hiding one item doesn't reshuffle all the pairs after it
+                    if (has_first_item && theApp.m_taskbar_data.group_related_items && !CanShareColumn(*first_iter, *iter))
+                    {
+                        int col_width = max_width0;
+                        m_item_rects[*first_iter].SetRect(current_x, 0, current_x + col_width, m_window_height);
+                        first_iter->is_double_line = true;
+                        current_x += col_width + item_space;
+                        has_first_item = false;
+                    }
                     if (!has_first_item)
                     {
                         // 当前列的第一个项目（上半部分），占一行

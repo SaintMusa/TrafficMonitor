@@ -232,6 +232,7 @@ void CTrafficMonitorApp::LoadConfig()
     if (m_taskbar_data.usage_critical_threshold < m_taskbar_data.usage_warning_threshold)
         m_taskbar_data.usage_critical_threshold = m_taskbar_data.usage_warning_threshold;
     m_taskbar_data.braille_graph = ini.GetBool(_T("task_bar"), _T("braille_graph"), false);
+    m_taskbar_data.group_related_items = ini.GetBool(_T("task_bar"), _T("group_related_items"), true);
     m_taskbar_data.braille_graph_network = ini.GetBool(_T("task_bar"), _T("braille_graph_network"), true);
     m_taskbar_data.braille_graph_length = ini.GetInt(_T("task_bar"), _T("braille_graph_length"), 5);
     m_taskbar_data.braille_graph_length = max(2, min(20, m_taskbar_data.braille_graph_length));
@@ -406,6 +407,7 @@ void CTrafficMonitorApp::SaveConfig()
     ini.WriteInt(L"task_bar", L"usage_warning_threshold", m_taskbar_data.usage_warning_threshold);
     ini.WriteInt(L"task_bar", L"usage_critical_threshold", m_taskbar_data.usage_critical_threshold);
     ini.WriteBool(L"task_bar", L"braille_graph", m_taskbar_data.braille_graph);
+    ini.WriteBool(L"task_bar", L"group_related_items", m_taskbar_data.group_related_items);
     ini.WriteBool(L"task_bar", L"braille_graph_network", m_taskbar_data.braille_graph_network);
     ini.WriteInt(L"task_bar", L"braille_graph_length", m_taskbar_data.braille_graph_length);
     ini.WriteBool(L"task_bar", L"separate_value_unit_with_space", m_taskbar_data.separate_value_unit_with_space);

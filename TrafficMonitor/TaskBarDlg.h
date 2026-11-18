@@ -183,6 +183,7 @@ protected:
     void DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect rect, int label_width, bool vertical = false);
     static int GetUsageAlertLevel(DisplayItem type);    //返回占用率警告级别：0正常，1警告，2严重
     static bool IsBrailleGraphItem(DisplayItem type);   //盲文历史图已开启且该项目需要绘制历史图
+    static bool CanShareColumn(const CommonDisplayItem& top, const CommonDisplayItem& bottom);  //related items (same family) may be paired in one column
     //用盲文字符绘制一个项目的历史图
     void DrawBrailleGraph(IDrawCommon& drawer, DisplayItem type, const CRect& rect_value, COLORREF normal_text_color);
     std::map<DisplayItem, std::deque<unsigned __int64>> m_braille_history;  //盲文历史图的采样点，最新的在队尾
