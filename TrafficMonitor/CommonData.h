@@ -318,6 +318,9 @@ struct TaskBarSettingData : public PublicSettingData
     bool usage_alert_colors{ true };    //占用率较高时将数值显示为琥珀色/红色
     int usage_warning_threshold{ 70 };  //占用率达到此值时显示警告色（1~100）
     int usage_critical_threshold{ 90 }; //占用率达到此值时显示严重警告色（1~100，不小于警告阈值）
+    bool braille_graph{ false };        //在标签和数值之间用盲文字符绘制滚动历史图
+    bool braille_graph_network{ true }; //网速项目是否也绘制盲文历史图
+    int braille_graph_length{ 5 };      //盲文历史图的字符数（2~20），每个字符显示2个采样点
     bool tbar_wnd_on_left{ false };     //如果为true，则任务栏窗口显示在任务栏的左侧（或上方）
     bool tbar_wnd_snap{ false };     	//如果为true，则在Win11中任务栏窗口贴靠中间任务栏，否则靠近边缘
     bool cm_graph_type{ false };        //如果为false，默认原样式，柱状图显示占用率，如为true，滚动显示占用率

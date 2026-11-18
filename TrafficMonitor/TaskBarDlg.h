@@ -9,6 +9,8 @@
 #include "TaskbarItemOrderHelper.h"
 #include "SupportedRenderEnums.h"
 #include <list>
+#include <map>
+#include <deque>
 
 // CTaskBarDlg 对话框
 #define TASKBAR_WND_HEIGHT DPI(32)				//任务栏窗口的高度
@@ -156,6 +158,7 @@ protected:
     UINT m_taskbar_dpi{};//TaskBarDlg自身专用dpi
 
     CFont m_font;			//字体
+    CFont m_backdrop_font;  //m_font without antialiasing, for the faint braille graph backdrop
 
     CDC* m_pDC{};		//窗口的DC，用来计算窗口的宽度
 
@@ -179,6 +182,12 @@ protected:
     //  vertical: 如果为true，则标签和数值上下显示
     void DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect rect, int label_width, bool vertical = false);
     static int GetUsageAlertLevel(DisplayItem type);    //返回占用率警告级别：0正常，1警告，2严重
+    static bool IsBrailleGraphItem(DisplayItem type);   //盲文历史图已开启且该项目需要绘制历史图
+    //用盲文字符绘制一个项目的历史图
+    void DrawBrailleGraph(IDrawCommon& drawer, DisplayItem type, const CRect& rect_value, COLORREF normal_text_color);
+    std::map<DisplayItem, std::deque<unsigned __int64>> m_braille_history;  //盲文历史图的采样点，最新的在队尾
+    int m_braille_graph_width{};        //盲文历史图本身的宽度（不含后面的空格），由CalculateWindowSize计算
+    int m_braille_graph_gap_width{};    //盲文历史图和数值之间空格的宽度
 
     //绘制任务栏窗口中的一个插件项目
    //  drawer: 绘图类的对象
@@ -193,6 +202,7 @@ protected:
 public:
     static void DisableRenderFeatureIfNecessary(CSupportedRenderEnums& ref_supported_render_enums);
     void SetTextFont();
+    void AddBrailleGraphSamples();      //记录盲文历史图的当前采样点，应在每次监控数据更新时调用一次
     void ApplySettings();
     void CalculateWindowSize();		//计算窗口每部分的大小，及各个部分的宽度。窗口大小保存到m_window_width和m_window_height中，各部分宽度保存到m_item_widths中，各部分的矩形区域保存到m_item_rects中
 

@@ -3106,6 +3106,8 @@ afx_msg LRESULT CTrafficMonitorDlg::OnMonitorInfoUpdated(WPARAM wParam, LPARAM l
     //更新任务栏窗口鼠标提示（暂停绘制期间跳过，恢复后会重新更新）
     if (IsTaskbarWndValid())
     {
+        //采样必须在这里记录（约每秒一次），不能放在绘制时，因为绘制频率不规则
+        m_tBarDlg->AddBrailleGraphSamples();
         m_tBarDlg->RequestRepaint();
         if (!m_taskbar_draw_paused)
             m_tBarDlg->UpdateToolTips();

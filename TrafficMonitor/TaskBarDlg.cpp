@@ -225,6 +225,183 @@ struct UsageAlertColors
     }
 };
 
+//盲文历史图的基础颜色，与UsageAlertColors使用相同的深色/浅色判断方式
+struct BrailleGraphColors
+{
+    COLORREF green;         //bottom dot row (0-25%)
+    COLORREF yellow_green;  //second row (25-50%)
+    COLORREF yellow;        //third row (50-75%); the top row uses the warning orange / critical red
+    COLORREF backdrop;      //faint dots showing the empty part of the graph. GDI text has no real opacity, so this is a colour
+                            //only slightly lighter than a dark taskbar, which reads like ~15% grey over it
+    COLORREF blue;
+    COLORREF purple;
+
+    static BrailleGraphColors Get(COLORREF normal_text_color)
+    {
+        int average = (GetRValue(normal_text_color) + GetGValue(normal_text_color) + GetBValue(normal_text_color)) / 3;
+        bool dark_taskbar = (average >= 128);
+        if (dark_taskbar)
+            return BrailleGraphColors{ RGB(64, 240, 110), RGB(170, 240, 60), RGB(255, 215, 0), RGB(42, 51, 62), RGB(40, 160, 255), RGB(200, 90, 255) };
+        return BrailleGraphColors{ RGB(0, 150, 40), RGB(110, 160, 0), RGB(190, 150, 0), RGB(205, 205, 205), RGB(0, 105, 220), RGB(140, 40, 200) };
+    }
+};
+
+//Braille dot bits of each dot row, bottom row first, for the left and right column of a character
+static const unsigned BRAILLE_ROW_LEFT_BITS[4]{ 0x40, 0x04, 0x02, 0x01 };
+static const unsigned BRAILLE_ROW_RIGHT_BITS[4]{ 0x80, 0x20, 0x10, 0x08 };
+
+static bool IsBraillePercentItem(DisplayItem type)
+{
+    return type == TDI_CPU || type == TDI_MEMORY || type == TDI_GPU_USAGE || type == TDI_HDD_USAGE;
+}
+
+bool CTaskBarDlg::IsBrailleGraphItem(DisplayItem type)
+{
+    if (!theApp.m_taskbar_data.braille_graph)
+        return false;
+    if (IsBraillePercentItem(type))
+        return true;
+    return theApp.m_taskbar_data.braille_graph_network && (type == TDI_UP || type == TDI_DOWN || type == TDI_TOTAL_SPEED);
+}
+
+//读取一个盲文历史图项目的当前值。占用率不可用（-1）时记为0
+static unsigned __int64 GetBrailleGraphValue(DisplayItem type)
+{
+    int usage{ -1 };
+    switch (type)
+    {
+    case TDI_CPU:
+        usage = theApp.m_cpu_usage;
+        break;
+    case TDI_MEMORY:
+        usage = theApp.m_memory_usage;
+        break;
+    case TDI_GPU_USAGE:
+        usage = theApp.m_gpu_usage;
+        break;
+    case TDI_HDD_USAGE:
+        usage = theApp.m_hdd_usage;
+        break;
+    case TDI_UP:
+        return theApp.m_out_speed;
+    case TDI_DOWN:
+        return theApp.m_in_speed;
+    case TDI_TOTAL_SPEED:
+        return theApp.m_in_speed + theApp.m_out_speed;
+    default:
+        break;
+    }
+    return usage < 0 ? 0 : static_cast<unsigned __int64>(usage);
+}
+
+void CTaskBarDlg::AddBrailleGraphSamples()
+{
+    if (!theApp.m_taskbar_data.braille_graph)
+        return;
+
+    static const DisplayItem graph_items[]{ TDI_CPU, TDI_MEMORY, TDI_GPU_USAGE, TDI_HDD_USAGE, TDI_UP, TDI_DOWN, TDI_TOTAL_SPEED };
+    size_t max_samples = static_cast<size_t>(theApp.m_taskbar_data.braille_graph_length) * 2;
+    for (DisplayItem item : graph_items)
+    {
+        auto& history = m_braille_history[item];
+        history.push_back(GetBrailleGraphValue(item));
+        while (history.size() > max_samples)
+            history.pop_front();
+    }
+}
+
+void CTaskBarDlg::DrawBrailleGraph(IDrawCommon& drawer, DisplayItem type, const CRect& rect_value, COLORREF normal_text_color)
+{
+    const int length = theApp.m_taskbar_data.braille_graph_length;
+    const int sample_count = length * 2;
+    if (length <= 0 || m_braille_graph_width <= 0)
+        return;
+
+    //取最近的sample_count个采样点，最新的在最右边；还没有记录的采样点按0处理
+    std::vector<unsigned __int64> samples(sample_count, 0);
+    auto his_iter = m_braille_history.find(type);
+    if (his_iter != m_braille_history.end())
+    {
+        const auto& history = his_iter->second;
+        size_t count = min(history.size(), static_cast<size_t>(sample_count));
+        for (size_t i = 0; i < count; i++)
+            samples[sample_count - 1 - i] = history[history.size() - 1 - i];
+    }
+
+    //每个采样点换算成0~4个点
+    const bool percent_item = IsBraillePercentItem(type);
+    unsigned __int64 scale{ 16 * 1024 };    //网速图的纵轴最小为16KB/s，避免很小的网速占满整个图
+    if (!percent_item)
+    {
+        for (unsigned __int64 v : samples)
+            scale = max(scale, v);
+    }
+    std::vector<int> levels(sample_count, 0);
+    for (int i = 0; i < sample_count; i++)
+    {
+        unsigned __int64 v = samples[i];
+        int level{};
+        if (percent_item)
+            level = (v == 0) ? 0 : static_cast<int>((v * 4 + 99) / 100);
+        else
+            level = (v < 1024) ? 0 : static_cast<int>((v * 4 + scale - 1) / scale);
+        if (level > 0)
+            level = max(1, min(4, level));
+        levels[i] = level;
+    }
+
+    //Colour by height, like btop: a dim backdrop of all 8 dots first, then one pass per dot row (bottom up), each
+    //in its own colour. One draw call can't give a character two colours, but text is drawn with a transparent
+    //background, so passes at the same position stack. Characters without a dot in a pass are blank braille (U+2800),
+    //which keeps every character at its position because the font is monospace.
+    BrailleGraphColors base_colors = BrailleGraphColors::Get(normal_text_color);
+    COLORREF row_colors[4]{ base_colors.green, base_colors.yellow_green, base_colors.yellow, UsageAlertColors::Get(normal_text_color, 1).text };
+    if (!percent_item)
+    {
+        COLORREF network_color = (type == TDI_UP) ? base_colors.purple : base_colors.blue;
+        for (COLORREF& color : row_colors)
+            color = network_color;
+    }
+    const COLORREF critical_color = UsageAlertColors::Get(normal_text_color, 2).text;
+    const unsigned __int64 critical_threshold = static_cast<unsigned __int64>(theApp.m_taskbar_data.usage_critical_threshold);
+
+    if (m_backdrop_font.m_hObject)
+    {
+        drawer.SetFont(&m_backdrop_font);
+        drawer.DrawWindowText(rect_value, std::wstring(length, L'\x28FF').c_str(), base_colors.backdrop, IDrawCommon::Alignment::LEFT);
+        drawer.SetFont(&m_font);
+    }
+    for (int row = 0; row < 4; row++)
+    {
+        std::wstring normal_pass(length, L'\x2800');
+        std::wstring critical_pass(length, L'\x2800');     //top-row dots of columns at or above the critical threshold turn red
+        bool has_normal{};
+        bool has_critical{};
+        for (int i = 0; i < length; i++)
+        {
+            unsigned bits = (levels[2 * i] > row ? BRAILLE_ROW_LEFT_BITS[row] : 0) | (levels[2 * i + 1] > row ? BRAILLE_ROW_RIGHT_BITS[row] : 0);
+            if (bits == 0)
+                continue;
+            bool critical = percent_item && row == 3 && theApp.m_taskbar_data.usage_alert_colors
+                && max(samples[2 * i], samples[2 * i + 1]) >= critical_threshold;
+            if (critical)
+            {
+                critical_pass[i] = static_cast<wchar_t>(0x2800 | bits);
+                has_critical = true;
+            }
+            else
+            {
+                normal_pass[i] = static_cast<wchar_t>(0x2800 | bits);
+                has_normal = true;
+            }
+        }
+        if (has_normal)
+            drawer.DrawWindowText(rect_value, normal_pass.c_str(), row_colors[row], IDrawCommon::Alignment::LEFT);
+        if (has_critical)
+            drawer.DrawWindowText(rect_value, critical_pass.c_str(), critical_color, IDrawCommon::Alignment::LEFT);
+    }
+}
+
 int CTaskBarDlg::GetUsageAlertLevel(DisplayItem type)
 {
     if (!theApp.m_taskbar_data.usage_alert_colors)
@@ -275,6 +452,7 @@ void CTaskBarDlg::DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect r
     }
 
     //占用率较高时改变数值文本和状态条的颜色（标签颜色不变）
+    const COLORREF normal_text_color{ text_color };     //盲文历史图用它判断深色/浅色任务栏
     COLORREF bar_color{ CLR_INVALID };
     int alert_level = GetUsageAlertLevel(type);
     if (alert_level > 0)
@@ -298,10 +476,32 @@ void CTaskBarDlg::DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect r
         rect_value.top = rect_label.bottom;
     }
 
+    //Braille graph. Side by side: between label and value, value text shifted right past it.
+    //Stacked (an item alone in its column): on the top row next to the label, the pair centred,
+    //so a lone item still gets its graph. Stacked items without a label have no room for it.
+    const bool braille_graph = IsBrailleGraphItem(type) && (!vertical || label_width != 0);
+    IDrawCommon::Alignment label_alignment{ vertical ? IDrawCommon::Alignment::CENTER : IDrawCommon::Alignment::LEFT };
+    if (braille_graph && !vertical)
+    {
+        DrawBrailleGraph(drawer, type, rect_value, normal_text_color);
+        rect_value.left += m_braille_graph_width + m_braille_graph_gap_width;
+    }
+    else if (braille_graph)
+    {
+        int group_width = label_width + m_braille_graph_gap_width + m_braille_graph_width;
+        rect_label.left += max(0, (rect_label.Width() - group_width) / 2);
+        rect_label.right = rect_label.left + label_width;
+        CRect rect_graph{ rect_label };
+        rect_graph.left = rect_label.right + m_braille_graph_gap_width;
+        rect_graph.right = rect.right;
+        DrawBrailleGraph(drawer, type, rect_graph, normal_text_color);
+        label_alignment = IDrawCommon::Alignment::LEFT;
+    }
+
     // 绘制状态条
-    if (type == TDI_CPU || type == TDI_MEMORY || type == TDI_GPU_USAGE || type == TDI_CPU_TEMP
+    if (!braille_graph && (type == TDI_CPU || type == TDI_MEMORY || type == TDI_GPU_USAGE || type == TDI_CPU_TEMP
         || type == TDI_GPU_TEMP || type == TDI_HDD_TEMP || type == TDI_MAIN_BOARD_TEMP || type == TDI_HDD_USAGE
-        || type == TDI_UP || type == TDI_DOWN || type == TDI_TOTAL_SPEED/* ||type==TDI_CPU_FREQ*/)
+        || type == TDI_UP || type == TDI_DOWN || type == TDI_TOTAL_SPEED/* ||type==TDI_CPU_FREQ*/))
     {
         int figure_value{};
         switch (type)
@@ -365,7 +565,7 @@ void CTaskBarDlg::DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect r
     if (label_width > 0)
     {
         wstring str_label = theApp.m_taskbar_data.disp_str.GetConst(type);
-        drawer.DrawWindowText(rect_label, str_label.c_str(), label_color, (vertical ? IDrawCommon::Alignment::CENTER : IDrawCommon::Alignment::LEFT));
+        drawer.DrawWindowText(rect_label, str_label.c_str(), label_color, label_alignment);
     }
 
     //绘制数值
@@ -814,6 +1014,17 @@ void CTaskBarDlg::SetTextFont()
     }
     //创建新的字体
     theApp.m_taskbar_data.font.Create(m_font, GetDPI());
+
+    //Same font without antialiasing, for the faint braille backdrop. The transparent taskbar window is keyed on a
+    //near-black colour, so antialiased edges blend toward black and faint dots show up as dark boxes.
+    if (m_backdrop_font.m_hObject)
+        m_backdrop_font.DeleteObject();
+    LOGFONT log_font{};
+    if (m_font.GetLogFont(&log_font))
+    {
+        log_font.lfQuality = NONANTIALIASED_QUALITY;
+        m_backdrop_font.CreateFontIndirect(&log_font);
+    }
     RequestRepaint();
 }
 
@@ -871,6 +1082,15 @@ void CTaskBarDlg::CalculateWindowSize()
             //数值宽度
             CString sample_str = iter->GetItemValueSampleText(false);
             item_widths[*iter].value_width = m_pDC->GetTextExtent(sample_str).cx;
+            if (IsBrailleGraphItem(iter->ItemType()))
+            {
+                //用最宽的盲文字符U+28FF测量，另加一个空格作为图和数值之间的间隔
+                std::wstring graph_str(theApp.m_taskbar_data.braille_graph_length, L'\x28FF');
+                m_braille_graph_width = m_pDC->GetTextExtent(graph_str.c_str(), static_cast<int>(graph_str.size())).cx;
+                int width_with_gap = m_pDC->GetTextExtent((graph_str + L' ').c_str(), static_cast<int>(graph_str.size() + 1)).cx;
+                m_braille_graph_gap_width = width_with_gap - m_braille_graph_width;
+                item_widths[*iter].value_width += width_with_gap;
+            }
         }
     }
 
