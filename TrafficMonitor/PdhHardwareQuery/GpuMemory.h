@@ -16,9 +16,11 @@ public:
     CPdhGPUMemory();
     ~CPdhGPUMemory();
 
+    // Get VRAM usage in bytes. total is the capacity of the same adapter (dedicated VRAM, or shared system memory
+    // for adapters without dedicated VRAM), or -1 if DXGI could not report it.
     // 获取显存占用（单位为字节）
     // 返回值: true=成功, false=失败
-    bool GetGpuMemoryUsed(/*out*/ __int64& used);
+    bool GetGpuMemoryUsed(/*out*/ __int64& used, /*out*/ __int64& total);
 
 private:
     static const unsigned long long DEDICATED_THRESHOLD = 64ull * 1024 * 1024;  //独立显存占用达到该值才认为适配器有独立显存
@@ -39,8 +41,22 @@ private:
         unsigned long long Score() const { return has_dedicated ? dedicated : shared; }
     };
     AdapterMemory* FindAdapter(const AdapterKey& key);
-    bool SelectAdapter(__int64& used);      //从m_adapters中选择要显示的适配器，返回其显存占用
+    bool SelectAdapter(__int64& used, __int64& total);      //从m_adapters中选择要显示的适配器，返回其显存占用
 
+    //Total memory of one adapter as reported by DXGI
+    struct AdapterTotals
+    {
+        unsigned long long luid;
+        bool found;                         //false = DXGI did not list this LUID; remembered so we do not retry every second
+        unsigned long long dedicated;       //DedicatedVideoMemory
+        unsigned long long shared;          //SharedSystemMemory
+    };
+    //Loads dxgi.dll on demand (it is delay-loaded on purpose, so it must not stay loaded in GDI render mode),
+    //enumerates the adapters, then unloads it again. Fills m_totals_cache for every adapter it finds.
+    void EnumerateAdapterTotals();
+    __int64 GetAdapterTotal(const AdapterMemory& adapter);
+
+    std::vector<AdapterTotals> m_totals_cache;  //cache by LUID; each new LUID triggers at most one enumeration
     HCOUNTER m_shared_counter = nullptr;    //Shared Usage计数器（与基类的Dedicated Usage计数器在同一个查询中）
     std::vector<BYTE> m_buffer;             //PDH返回数据的缓冲区，在多次查询间复用
     std::vector<AdapterMemory> m_adapters;  //每次查询时的适配器列表，在多次查询间复用

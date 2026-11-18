@@ -1,6 +1,7 @@
 ﻿#include "stdafx.h"
 #include "GpuMemory.h"
 #include "PdhGpuCommon.h"
+#include <dxgi.h>
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 // CPdhGPUMemory 实现
@@ -32,7 +33,7 @@ CPdhGPUMemory::AdapterMemory* CPdhGPUMemory::FindAdapter(const AdapterKey& key)
     return nullptr;
 }
 
-bool CPdhGPUMemory::GetGpuMemoryUsed(__int64& used)
+bool CPdhGPUMemory::GetGpuMemoryUsed(__int64& used, __int64& total)
 {
     if (!isInitialized)
         return false;
@@ -78,10 +79,74 @@ bool CPdhGPUMemory::GetGpuMemoryUsed(__int64& used)
             adapter->shared = static_cast<unsigned long long>(max(items[i].FmtValue.doubleValue, 0.0));
         }
     }
-    return SelectAdapter(used);
+    return SelectAdapter(used, total);
 }
 
-bool CPdhGPUMemory::SelectAdapter(__int64& used)
+void CPdhGPUMemory::EnumerateAdapterTotals()
+{
+    //Load dxgi.dll by hand instead of calling CreateDXGIFactory1 directly: the DLL is delay-loaded on purpose,
+    //and a direct call would keep the whole DXGI stack loaded for good, even in GDI render mode.
+    HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+    if (dxgi == nullptr)
+        return;
+    typedef HRESULT(WINAPI* CreateDXGIFactory1Fn)(REFIID, void**);
+    auto create_factory = reinterpret_cast<CreateDXGIFactory1Fn>(GetProcAddress(dxgi, "CreateDXGIFactory1"));
+    if (create_factory != nullptr)
+    {
+        IDXGIFactory1* factory{};
+        if (SUCCEEDED(create_factory(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory))) && factory != nullptr)
+        {
+            IDXGIAdapter1* dxgi_adapter{};
+            for (UINT i = 0; SUCCEEDED(factory->EnumAdapters1(i, &dxgi_adapter)) && dxgi_adapter != nullptr; i++)
+            {
+                DXGI_ADAPTER_DESC1 desc{};
+                if (SUCCEEDED(dxgi_adapter->GetDesc1(&desc)))
+                {
+                    //Same packing as the LUID parsed from the PDH instance name (high << 32 | low)
+                    unsigned long long luid = (static_cast<unsigned long long>(static_cast<unsigned long>(desc.AdapterLuid.HighPart)) << 32)
+                        | static_cast<unsigned long>(desc.AdapterLuid.LowPart);
+                    m_totals_cache.push_back({ luid, true, static_cast<unsigned long long>(desc.DedicatedVideoMemory), static_cast<unsigned long long>(desc.SharedSystemMemory) });
+                }
+                dxgi_adapter->Release();
+                dxgi_adapter = nullptr;
+            }
+            factory->Release();
+        }
+    }
+    //All COM objects are released above, so the DLL can be unloaded safely
+    FreeLibrary(dxgi);
+}
+
+__int64 CPdhGPUMemory::GetAdapterTotal(const AdapterMemory& adapter)
+{
+    auto find_totals = [&]() -> const AdapterTotals*
+    {
+        for (const auto& totals : m_totals_cache)
+        {
+            if (totals.luid == adapter.key.luid)
+                return &totals;
+        }
+        return nullptr;
+    };
+    const AdapterTotals* totals = find_totals();
+    if (totals == nullptr)
+    {
+        //Enumerate at most once per new LUID. A LUID DXGI does not list is cached as "not found" so it is not retried every second.
+        EnumerateAdapterTotals();
+        totals = find_totals();
+        if (totals == nullptr)
+        {
+            m_totals_cache.push_back({ adapter.key.luid, false, 0, 0 });
+            return -1;
+        }
+    }
+    if (!totals->found)
+        return -1;
+    unsigned long long value = adapter.has_dedicated ? totals->dedicated : totals->shared;
+    return value == 0 ? -1 : static_cast<__int64>(value);
+}
+
+bool CPdhGPUMemory::SelectAdapter(__int64& used, __int64& total)
 {
     if (m_adapters.empty())
         return false;
@@ -109,5 +174,6 @@ bool CPdhGPUMemory::SelectAdapter(__int64& used)
     m_selected = selected->key;
 
     used = static_cast<__int64>(selected->Score());
+    total = GetAdapterTotal(*selected);
     return true;
 }

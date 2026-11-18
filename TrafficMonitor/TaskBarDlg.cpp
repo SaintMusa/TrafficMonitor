@@ -250,9 +250,19 @@ struct BrailleGraphColors
 static const unsigned BRAILLE_ROW_LEFT_BITS[4]{ 0x40, 0x04, 0x02, 0x01 };
 static const unsigned BRAILLE_ROW_RIGHT_BITS[4]{ 0x80, 0x20, 0x10, 0x08 };
 
+//VRAM usage as a percentage of the selected adapter's total. -1 if the used or total size is unknown.
+//The VRAM item shows bytes as text, but graph and alert colours need a percentage like the other items.
+static int GetGpuMemoryPercent()
+{
+    if (theApp.m_gpu_memory < 0 || theApp.m_gpu_memory_total <= 0)
+        return -1;
+    __int64 percent = static_cast<__int64>(static_cast<double>(theApp.m_gpu_memory) * 100.0 / static_cast<double>(theApp.m_gpu_memory_total));
+    return static_cast<int>(max(0, min(100, percent)));
+}
+
 static bool IsBraillePercentItem(DisplayItem type)
 {
-    return type == TDI_CPU || type == TDI_MEMORY || type == TDI_GPU_USAGE || type == TDI_HDD_USAGE;
+    return type == TDI_CPU || type == TDI_MEMORY || type == TDI_GPU_USAGE || type == TDI_HDD_USAGE || type == TDI_GPU_MEMORY;
 }
 
 bool CTaskBarDlg::IsBrailleGraphItem(DisplayItem type)
@@ -282,6 +292,9 @@ static unsigned __int64 GetBrailleGraphValue(DisplayItem type)
     case TDI_HDD_USAGE:
         usage = theApp.m_hdd_usage;
         break;
+    case TDI_GPU_MEMORY:
+        usage = GetGpuMemoryPercent();
+        break;
     case TDI_UP:
         return theApp.m_out_speed;
     case TDI_DOWN:
@@ -299,7 +312,7 @@ void CTaskBarDlg::AddBrailleGraphSamples()
     if (!theApp.m_taskbar_data.braille_graph)
         return;
 
-    static const DisplayItem graph_items[]{ TDI_CPU, TDI_MEMORY, TDI_GPU_USAGE, TDI_HDD_USAGE, TDI_UP, TDI_DOWN, TDI_TOTAL_SPEED };
+    static const DisplayItem graph_items[]{ TDI_CPU, TDI_MEMORY, TDI_GPU_USAGE, TDI_HDD_USAGE, TDI_GPU_MEMORY, TDI_UP, TDI_DOWN, TDI_TOTAL_SPEED };
     size_t max_samples = static_cast<size_t>(theApp.m_taskbar_data.braille_graph_length) * 2;
     for (DisplayItem item : graph_items)
     {
@@ -422,6 +435,9 @@ int CTaskBarDlg::GetUsageAlertLevel(DisplayItem type)
     case TDI_HDD_USAGE:
         value = theApp.m_hdd_usage;
         break;
+    case TDI_GPU_MEMORY:
+        value = GetGpuMemoryPercent();
+        break;
     default:
         return 0;
     }
@@ -478,7 +494,7 @@ void CTaskBarDlg::DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect r
 
     //Braille graph. Side by side: between label and value, value text shifted right past it.
     //Stacked (an item alone in its column): on the top row next to the label, the pair centred,
-    //so a lone item still gets its graph. Stacked items without a label have no room for it.
+    //so a lone item such as VRAM still gets its graph. Stacked items without a label have no room for it.
     const bool braille_graph = IsBrailleGraphItem(type) && (!vertical || label_width != 0);
     IDrawCommon::Alignment label_alignment{ vertical ? IDrawCommon::Alignment::CENTER : IDrawCommon::Alignment::LEFT };
     if (braille_graph && !vertical)

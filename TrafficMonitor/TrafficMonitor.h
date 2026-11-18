@@ -57,6 +57,7 @@ public:
     float m_hdd_temperature{ -1 };  //硬盘温度
     float m_main_board_temperature{ -1 };    //主板温度
     int m_gpu_usage{ -1 };      //显卡利用率
+    __int64 m_gpu_memory_total{ -1 };  //Total VRAM of the adapter m_gpu_memory refers to (bytes, -1 = unknown)
     __int64 m_gpu_memory{ -1 };  //显卡显存占用（单位为字节，-1表示不可用）
     int m_hdd_usage{ -1 };      //硬盘利用率
 

@@ -1564,8 +1564,10 @@ void CTrafficMonitorDlg::DoMonitorAcquisition()
     }
 
     //获取显存占用（没有任何地方需要时跳过获取，此时置为“不可用”的初始值-1）
-    if (!m_gpu_memory_needed || !m_gpu_memory_helper.GetGpuMemoryUsed(theApp.m_gpu_memory))
+    if (!m_gpu_memory_needed || !m_gpu_memory_helper.GetGpuMemoryUsed(theApp.m_gpu_memory, theApp.m_gpu_memory_total))
         theApp.m_gpu_memory = -1;
+    if (theApp.m_gpu_memory < 0)
+        theApp.m_gpu_memory_total = -1;
 
     //获取硬盘利用率
     if ((lite_version /*|| is_arm64ec*/ || !theApp.m_general_data.IsHardwareEnable(HI_HDD)) && !m_hdd_usage_needed)
