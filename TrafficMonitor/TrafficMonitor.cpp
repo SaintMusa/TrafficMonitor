@@ -224,6 +224,13 @@ void CTrafficMonitorApp::LoadConfig()
     m_taskbar_data.value_right_align = ini.GetBool(_T("task_bar"), _T("value_right_align"), true);
     m_taskbar_data.horizontal_arrange = ini.GetBool(_T("task_bar"), _T("horizontal_arrange"), false);
     m_taskbar_data.show_status_bar = ini.GetBool(_T("task_bar"), _T("show_status_bar"), true);
+    m_taskbar_data.usage_alert_colors = ini.GetBool(_T("task_bar"), _T("usage_alert_colors"), true);
+    m_taskbar_data.usage_warning_threshold = ini.GetInt(_T("task_bar"), _T("usage_warning_threshold"), 70);
+    m_taskbar_data.usage_critical_threshold = ini.GetInt(_T("task_bar"), _T("usage_critical_threshold"), 90);
+    m_taskbar_data.usage_warning_threshold = max(1, min(100, m_taskbar_data.usage_warning_threshold));
+    m_taskbar_data.usage_critical_threshold = max(1, min(100, m_taskbar_data.usage_critical_threshold));
+    if (m_taskbar_data.usage_critical_threshold < m_taskbar_data.usage_warning_threshold)
+        m_taskbar_data.usage_critical_threshold = m_taskbar_data.usage_warning_threshold;
     m_taskbar_data.separate_value_unit_with_space = ini.GetBool(_T("task_bar"), _T("separate_value_unit_with_space"), true);
     m_taskbar_data.show_tool_tip = ini.GetBool(_T("task_bar"), _T("show_tool_tip"), true);
     m_taskbar_data.digits_number = ini.GetInt(_T("task_bar"), _T("digits_number"), 4);
@@ -391,6 +398,9 @@ void CTrafficMonitorApp::SaveConfig()
     ini.WriteBool(L"task_bar", L"value_right_align", m_taskbar_data.value_right_align);
     ini.WriteBool(L"task_bar", L"horizontal_arrange", m_taskbar_data.horizontal_arrange);
     ini.WriteBool(L"task_bar", L"show_status_bar", m_taskbar_data.show_status_bar);
+    ini.WriteBool(L"task_bar", L"usage_alert_colors", m_taskbar_data.usage_alert_colors);
+    ini.WriteInt(L"task_bar", L"usage_warning_threshold", m_taskbar_data.usage_warning_threshold);
+    ini.WriteInt(L"task_bar", L"usage_critical_threshold", m_taskbar_data.usage_critical_threshold);
     ini.WriteBool(L"task_bar", L"separate_value_unit_with_space", m_taskbar_data.separate_value_unit_with_space);
     ini.WriteBool(L"task_bar", L"show_tool_tip", m_taskbar_data.show_tool_tip);
     ini.WriteInt(L"task_bar", L"digits_number", m_taskbar_data.digits_number);

@@ -27,7 +27,7 @@ public:
     CToolTipCtrl m_tool_tips;
 
     void ShowInfo(CDC* pDC); 	//将信息绘制到控件上
-    void TryDrawStatusBar(IDrawCommon& drawer, const CRect& rect_bar, int usage_percent); //绘制CPU/内存状态条
+    void TryDrawStatusBar(IDrawCommon& drawer, const CRect& rect_bar, int usage_percent, COLORREF bar_color = CLR_INVALID); //绘制CPU/内存状态条（bar_color为CLR_INVALID时使用默认颜色）
 
     void TryDrawGraph(IDrawCommon& drawer, const CRect& value_rect, CommonDisplayItem item_type);		// 绘制CPU/内存动态图
 
@@ -178,6 +178,7 @@ protected:
     //  label_width: 标签区域的宽度
     //  vertical: 如果为true，则标签和数值上下显示
     void DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect rect, int label_width, bool vertical = false);
+    static int GetUsageAlertLevel(DisplayItem type);    //返回占用率警告级别：0正常，1警告，2严重
 
     //绘制任务栏窗口中的一个插件项目
    //  drawer: 绘图类的对象

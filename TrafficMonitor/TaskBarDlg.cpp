@@ -204,6 +204,60 @@ void CTaskBarDlg::ShowInfo(CDC* pDC)
 #endif
 }
 
+//占用率警告色。根据正常数值文本的亮度判断任务栏是深色还是浅色，使警告色在背景上保持可读
+struct UsageAlertColors
+{
+    COLORREF text;
+    COLORREF bar;
+
+    static UsageAlertColors Get(COLORREF normal_text_color, int alert_level)
+    {
+        int average = (GetRValue(normal_text_color) + GetGValue(normal_text_color) + GetBValue(normal_text_color)) / 3;
+        bool dark_taskbar = (average >= 128);   //文本为浅色说明背景为深色
+        bool critical = (alert_level >= 2);
+        if (dark_taskbar)
+        {
+            return critical ? UsageAlertColors{ RGB(255, 59, 48), RGB(130, 20, 20) }
+                            : UsageAlertColors{ RGB(255, 149, 0), RGB(120, 65, 0) };
+        }
+        return critical ? UsageAlertColors{ RGB(215, 0, 21), RGB(250, 180, 175) }
+                        : UsageAlertColors{ RGB(201, 92, 0), RGB(250, 205, 150) };
+    }
+};
+
+int CTaskBarDlg::GetUsageAlertLevel(DisplayItem type)
+{
+    if (!theApp.m_taskbar_data.usage_alert_colors)
+        return 0;
+
+    int value{ -1 };
+    switch (type)
+    {
+    case TDI_CPU:
+        value = theApp.m_cpu_usage;
+        break;
+    case TDI_MEMORY:
+        value = theApp.m_memory_usage;
+        break;
+    case TDI_GPU_USAGE:
+        value = theApp.m_gpu_usage;
+        break;
+    case TDI_HDD_USAGE:
+        value = theApp.m_hdd_usage;
+        break;
+    default:
+        return 0;
+    }
+
+    if (value < 0)
+        return 0;
+    if (value >= theApp.m_taskbar_data.usage_critical_threshold)
+        return 2;
+    if (value >= theApp.m_taskbar_data.usage_warning_threshold)
+        return 1;
+    return 0;
+}
+
 void CTaskBarDlg::DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect rect, int label_width, bool vertical)
 {
     //设置要绘制的文本颜色
@@ -218,6 +272,16 @@ void CTaskBarDlg::DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect r
     {
         label_color = theApp.m_taskbar_data.text_colors.begin()->second.label;
         text_color = theApp.m_taskbar_data.text_colors.begin()->second.label;
+    }
+
+    //占用率较高时改变数值文本和状态条的颜色（标签颜色不变）
+    COLORREF bar_color{ CLR_INVALID };
+    int alert_level = GetUsageAlertLevel(type);
+    if (alert_level > 0)
+    {
+        UsageAlertColors colors = UsageAlertColors::Get(text_color, alert_level);
+        text_color = colors.text;
+        bar_color = colors.bar;
     }
 
     //设置标签和数值的矩形区域
@@ -292,7 +356,7 @@ void CTaskBarDlg::DrawDisplayItem(IDrawCommon& drawer, DisplayItem type, CRect r
             }
             else
             {
-                TryDrawStatusBar(drawer, rect, figure_value);
+                TryDrawStatusBar(drawer, rect, figure_value, bar_color);
             }
         }
     }
@@ -442,14 +506,14 @@ void CTaskBarDlg::DisableRenderFeatureIfNecessary(CSupportedRenderEnums& ref_sup
     }
 }
 
-void CTaskBarDlg::TryDrawStatusBar(IDrawCommon& drawer, const CRect& rect_bar, int usage_percent)
+void CTaskBarDlg::TryDrawStatusBar(IDrawCommon& drawer, const CRect& rect_bar, int usage_percent, COLORREF bar_color)
 {
     //限制范围
     if (usage_percent > 100)
         usage_percent = 100;
     if (usage_percent < 0)
         usage_percent = 0;
-    COLORREF graph_color = theApp.m_taskbar_data.GetUsageGraphColor();
+    COLORREF graph_color = (bar_color != CLR_INVALID) ? bar_color : theApp.m_taskbar_data.GetUsageGraphColor();
     CSize fill_size = CSize(rect_bar.Width() * usage_percent / 100, rect_bar.Height());
     CRect rect_fill(rect_bar.TopLeft(), fill_size);
     if (theApp.m_taskbar_data.show_graph_dashed_box)
