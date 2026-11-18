@@ -21,40 +21,32 @@ void CUpdateHelper::SetUpdateSource(UpdateSource update_source)
 bool CUpdateHelper::CheckForUpdate()
 {
     wstring version_info;
-    //使用GitHub更新源
-    if (m_update_source == UpdateSource::GitHubSource)
+    //This mod checks its own GitHub fork, so it never offers the official build, which would replace the mod.
+    //The fork has no Gitee mirror, so the Gitee update source uses GitHub as well.
+    if (CCommon::GetURL(L"https://raw.githubusercontent.com/SaintMusa/TrafficMonitor/mod/version_utf8.info", version_info, true))     //获取版本信息
     {
-        if (CCommon::GetURL(L"https://raw.githubusercontent.com/zhongyang219/TrafficMonitor/master/version_utf8.info", version_info, true))     //获取版本信息
-        {
-            m_row_data = true;
-        }
-        else if (CCommon::GetURL(L"https://github.com/zhongyang219/TrafficMonitor/blob/master/version_utf8.info", version_info, true))      //获取版本信息
-        {
-            m_row_data = false;
-        }
-        else
-        {
-            return false;
-        }
-
-        if (!m_row_data)
-        {
-            size_t index = version_info.find(L"﻿&lt;version&gt;");
-            if (index != std::wstring::npos)
-                version_info = version_info.substr(index);
-
-            CString str_version_info = version_info.c_str();
-            str_version_info.Replace(L"&lt;", L"<");
-            str_version_info.Replace(L"&gt;", L">");
-
-            version_info = str_version_info;
-        }
+        m_row_data = true;
     }
-    //使用Gitee更新源
+    else if (CCommon::GetURL(L"https://github.com/SaintMusa/TrafficMonitor/blob/mod/version_utf8.info", version_info, true))      //获取版本信息
+    {
+        m_row_data = false;
+    }
     else
     {
-        if (!CCommon::GetURL(L"https://gitee.com/zhongyang219/TrafficMonitor/raw/master/version_utf8.info", version_info, true))     //获取版本信息
-            return false;
+        return false;
+    }
+
+    if (!m_row_data)
+    {
+        size_t index = version_info.find(L"﻿&lt;version&gt;");
+        if (index != std::wstring::npos)
+            version_info = version_info.substr(index);
+
+        CString str_version_info = version_info.c_str();
+        str_version_info.Replace(L"&lt;", L"<");
+        str_version_info.Replace(L"&gt;", L">");
+
+        version_info = str_version_info;
     }
 
     ParseUpdateInfo(version_info);
